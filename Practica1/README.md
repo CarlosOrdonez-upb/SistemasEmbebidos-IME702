@@ -20,14 +20,22 @@ Implementar un circuito que permita encender y apagar un LED utilizando dos boto
 - **3.3V/GND** → Alimentación del circuito
 
 ### Esquema:
-graph TD
-    ESP32 --> GPIO2[GPIO 2]
-    ESP32 --> GPIO4[GPIO 4]
-    ESP32 --> GPIO16[GPIO 16]
-    
-    GPIO2 --> Resistor[Resistencia 220Ω] --> LED --> GND1[GND]
-    GPIO4 --> BotonON[Botón ON] --> GND2[GND]
-    GPIO16 --> BotonOFF[Botón OFF] --> GND3[GND]
+```text
+[ ESP32 Board ]
+       |
+       +--- 3V3 / VIN ----> [ Módulo Relé: VCC ]
+       |
+       +--- GND -----------> [ Módulo Relé: GND ]
+       |
+       +--- GPIO 26 -------> [ Módulo Relé: IN  ] (Control)
+       |
+       +--- GPIO 14 -------> [ Botón 1: Pin 1 ] (Encendido)
+       |                     [ Botón 1: Pin 2 ] ---> GND
+       |
+       +--- GPIO 27 -------> [ Botón 2: Pin 1 ] (Apagado)
+                             [ Botón 2: Pin 2 ] ---> GND
+
+```                            
 
 ## 💡 Funcionamiento
 - **Botón ON (GPIO 4):** Al presionarlo, el LED se enciende
