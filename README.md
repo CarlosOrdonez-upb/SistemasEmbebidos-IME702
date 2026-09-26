@@ -1,4 +1,4 @@
-![Banner Sistemas Embebidos]([https://media.giphy.com/media/3o7TKSjRrfPHj362dG/giphy.gif](https://media1.tenor.com/m/zA8oh1-zFm8AAAAC/biggiecheese-mr-bombastic.gif)) 
+![Banner Sistemas Embebidos]([https://media1.tenor.com/m/zA8oh1-zFm8AAAAC/biggiecheese-mr-bombastic.gif]) 
 
 
 # ⚙️ Sistemas Embebidos - IME702
