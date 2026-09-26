@@ -1,6 +1,6 @@
 # ⚙️ Sistemas Embebidos - IME702
 
-Repositorio dedicado al desarrollo, documentación y simulación de las prácticas de laboratorio de la materia de Sistemas Embebidos.
+Repositorio dedicado al desarrollo, documentación y simulación de las prácticas de laboratorio de la materia de Sistemas Embebidos impartida por el Dr.Hugo Antonio Mendez Guzman.
 
 ## 💻 Tecnologías y Herramientas
 
@@ -20,11 +20,11 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 ---
 
 ## 👥 Equipo de Trabajo
-- **Carlos Ordóñez**
-- **Negrete**
-- **Iván**
-- **Karol**
-- **Francisco**
+- **Jose Carlos Ordoñez Bravo**
+- **Jorge Alberto Negrete Garnica**
+- **Maria Carrio Villagomez**
+- **Carlos Ivan Hernandez Castro**
+- **Jose Francisco Cadena Martinez**
 
 ---
 
@@ -32,7 +32,7 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 
 | # | Práctica | Descripción | Estado | Links Rápidos |
 |---|----------|-------------|--------|---------------|
-| 01 | **[Control de LED con Botones](./Practica1/)** | Encendido y apagado de un LED mediante dos pulsadores con pull-up interna. | ✅ Completada | [📄 Código](./Practica1/codigo/control_led.ino) • [📦 Materiales](./Practica1/materiales.md) |
+| 01 | **[Control de LED con Botones](./Practica1/)** | Encendido y apagado de un LED mediante dos pulsadores. | ✅ Completada | [📄 Código](./Practica1/codigo/control_led.ino) • [📦 Materiales](./Practica1/materiales.md) |
 | 02 | **[Control de Motorreductor con Relé](./Practica2/)** | Activación de un motor DC 3V-5V usando un módulo de relé como etapa de potencia. | ✅ Completada | [📄 Código](./Practica2/codigo/control_motor_rele.ino) • [📦 Materiales](./Practica2/materiales.md) |
 
 ---
@@ -48,4 +48,4 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 - El módulo de relé se activa con nivel `LOW` en el GPIO correspondiente.
 
 ---
-*Desarrollado como parte del curso IME702 - Sistemas Embebidos - Universidad Politécnica del Bicentenario 2026.*
+*Desarrollado como parte del curso Sistemas Embebidos - IME702 - Universidad Politécnica del Bicentenario 2026.*
