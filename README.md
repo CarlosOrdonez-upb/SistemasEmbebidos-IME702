@@ -1,5 +1,4 @@
-![Banner Sistemas Embebidos]([[https://media1.tenor.com/m/zA8oh1-zFm8AAAAC/biggiecheese-mr-bombastic.gif](https://media1.tenor.com/m/zA8oh1-zFm8AAAAC/biggiecheese-mr-bombastic.gif)]) 
-
+![Banner Sistemas Embebidos](https://media1.tenor.com/m/zA8oh1-zFm8AAAAC/biggiecheese-mr-bombastic.gif)
 
 # ⚙️ Sistemas Embebidos - IME702
 
