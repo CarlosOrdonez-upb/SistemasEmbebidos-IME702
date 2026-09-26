@@ -84,4 +84,3 @@ La interfaz Python y el ESP32 se comunican mediante un protocolo de texto plano 
 
 ## ⚠️ Consideraciones de Seguridad
 - Calibrar la constante de caudal (`ML_POR_SEGUNDO`) en el código Python midiendo el volumen real bombeado.
-- Se recomienda instalar capacitores cerámicos de 100nF en los terminales de las bombas para suprimir picos de voltaje (ruido electromagnético).
