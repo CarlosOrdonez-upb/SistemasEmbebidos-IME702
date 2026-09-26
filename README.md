@@ -13,8 +13,8 @@ Repositorio del equipo para el desarrollo de prácticas con ESP32, Arduino IDE y
 
 | # | Práctica | Descripción | Estado |
 |---|----------|-------------|--------|
-| 01 | [Control de LED con Botones](./01_Control_LED_Botones/) | Encendido/apagado de LED mediante dos pulsadores | ✅ Completada |
-| 02 | [Control de Motorreductor con Relé](./02_Control_MotorRelé/) | Activación de motor DC usando relé y pulsadores | ✅ Completada |
+| 01 | [Control de LED con Botones](.Practica1/codigo/control_led.ino) | Encendido/apagado de LED mediante dos pulsadores | ✅ Completada |
+| 02 | [Control de Motorreductor con Relé](.Practica2/codigo/control_motor_rele.ino) | Activación de motor DC usando relé y pulsadores | ✅ Completada |
 
 ## 🛠️ Hardware Utilizado
 - **Microcontrolador:** ESP32 DevKit 
