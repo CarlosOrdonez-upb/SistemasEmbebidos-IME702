@@ -46,6 +46,5 @@ Implementar un circuito que permita encender y apagar un LED utilizando dos boto
 - `codigo/control_led.ino` - Código principal en Arduino IDE
 
 ##  Ver simulación
-*(Insertar imagenes de referencia o el video aqui)*
-
+  ![Simulación en Wokwi](SimulacionLED.mp4)
 
