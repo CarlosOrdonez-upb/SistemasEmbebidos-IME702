@@ -20,6 +20,7 @@ Implementar un circuito que permita encender y apagar un LED utilizando dos boto
 - **3.3V/GND** → Alimentación del circuito
 
 ### Esquema:
+```mermaid
 ESP32
 │
 ├── GPIO 2 ─[220Ω]───(LED)─── GND
@@ -27,7 +28,7 @@ ESP32
 ├── GPIO 4 ──(Botón ON)─── GND
 │
 └── GPIO 16 ──(Botón OFF)─── GND
-
+```
 
 ## 💡 Funcionamiento
 - **Botón ON (GPIO 4):** Al presionarlo, el LED se enciende
@@ -38,4 +39,6 @@ ESP32
 - `codigo/control_led.ino` - Código principal en Arduino IDE
 
 ##  Ver simulación
-*(Aquí puedes subir la imagen que me mostraste o poner un link si la subes a imgur)*
+*(Insertar imagenes de referencia o el video aqui)*
+
+
