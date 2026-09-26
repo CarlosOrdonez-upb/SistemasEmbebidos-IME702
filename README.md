@@ -4,12 +4,18 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 
 ## 💻 Tecnologías y Herramientas
 
-<div align="center">
-  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/arduino/arduino-original.svg" width="50" title="Arduino IDE"/>
-  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/cplusplus/cplusplus-original.svg" width="50" title="C++"/>
-  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/espressif/espressif-original.svg" width="50" title="ESP32"/>
-  <img src="https://cdn.jsdelivr.net/gh/devicons/devicon@latest/icons/github/github-original.svg" width="50" title="GitHub"/>
-</div>
+<table>
+  <tr>
+    <td><img src="https://img.shields.io/badge/ESP32-DevKit_V1-blue?logo=espressif&logoColor=white" width="150"/></td>
+    <td><img src="https://img.shields.io/badge/Arduino-IDE-orange?logo=arduino&logoColor=white" width="130"/></td>
+    <td><img src="https://img.shields.io/badge/C%2B%2B-Programming-blue?logo=c%2B%2B&logoColor=white" width="140"/></td>
+  </tr>
+  <tr>
+    <td><img src="https://img.shields.io/badge/Wokwi-Simulation-purple?logo=google-chrome&logoColor=white" width="150"/></td>
+    <td><img src="https://img.shields.io/badge/Framework-Arduino-teal?logo=arduino&logoColor=white" width="140"/></td>
+    <td><img src="https://img.shields.io/badge/GitHub-Version_Control-gray?logo=github&logoColor=white" width="160"/></td>
+  </tr>
+</table>
 
 ---
 
