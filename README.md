@@ -1,3 +1,6 @@
+![Banner Sistemas Embebidos]([https://media.giphy.com/media/3o7TKSjRrfPHj362dG/giphy.gif](https://media1.tenor.com/m/zA8oh1-zFm8AAAAC/biggiecheese-mr-bombastic.gif)) 
+
+
 # ⚙️ Sistemas Embebidos - IME702
 
 Repositorio dedicado al desarrollo, documentación y simulación de las prácticas de laboratorio de la materia de Sistemas Embebidos impartida por el Dr.Hugo Antonio Mendez Guzman.
@@ -48,4 +51,24 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 - El módulo de relé se activa con nivel `LOW` en el GPIO correspondiente.
 
 ---
+
+## 🗺️ Roadmap (Próximas Prácticas)
+
+- [ ] **Práctica 03:** Control de bombas, llenado y vaciado de recipientes
+- [ ] **Práctica 04:** Control de temperatura (UART)
+- [ ] **Práctica 05:** Pendiente....
+
+> *Este repositorio se actualizará según los avances del curso.*
+
+--- 
 *Desarrollado como parte del curso Sistemas Embebidos - IME702 - Universidad Politécnica del Bicentenario 2026.*
+
+---
+## ⚖️ Aviso Legal y Derechos de Autor
+
+© 2024 Equipo de Sistemas Embebidos (Carlos Ordóñez, Negrete, Iván, Karol, Francisco).  
+**Todos los derechos reservados.**
+
+Este repositorio y su contenido (código fuente, diagramas, documentación y simulaciones) han sido desarrollados exclusivamente con fines académicos y evaluativos para la materia **IME702 - Sistemas Embebidos**. 
+
+Queda estrictamente prohibida su reproducción, distribución, modificación o uso comercial sin la autorización expresa y por escrito de los autores. El acceso a este repositorio no otorga ninguna licencia sobre las obras contenidas en él.
