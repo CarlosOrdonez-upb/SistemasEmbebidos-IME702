@@ -36,6 +36,7 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 |---|----------|-------------|--------|---------------|
 | 01 | **[Control de LED con Botones](./Practica1/)** | Encendido y apagado de un LED mediante dos pulsadores. | ✅ Completada | [📄 Código](./Practica1/codigo/control_led.ino) • [📦 Materiales](./Practica1/materiales.md) |
 | 02 | **[Control de Motorreductor con Relé](./Practica2/)** | Activación de un motor DC 3V-5V usando un módulo de relé como etapa de potencia. | ✅ Completada | [📄 Código](./Practica2/codigo/control_motor_rele.ino) • [📦 Materiales](./Practica2/materiales.md) |
+| 03 | **[Control de Llenado/Vaciado + GUI Python](./Practica3/)** | Sistema con sensor ultrasónico, paradas de seguridad y panel de control en Tkinter. | ✅ Completada | [📂 Ver Carpeta](./Practica3/) |
 
 ---
 
@@ -53,7 +54,7 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 
 ## 🗺️ Roadmap (Próximas Prácticas)
 
-- [ ] **Práctica 03:** Control de bombas, llenado y vaciado de recipientes
+- [ ] **Práctica 03:** Control de Llenado/Vaciado
 - [ ] **Práctica 04:** Control de temperatura (UART)
 - [ ] **Práctica 05:** Pendiente....
 
