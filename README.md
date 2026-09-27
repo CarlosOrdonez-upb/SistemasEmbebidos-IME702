@@ -1,4 +1,5 @@
-![Banner Sistemas Embebidos](https://media1.tenor.com/m/zA8oh1-zFm8AAAAC/biggiecheese-mr-bombastic.gif)
+
+![Banner-Inicio](./sources/Banner.gif)
 
 # ⚙️ Sistemas Embebidos - IME702
 
@@ -29,7 +30,6 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 - **Jose Francisco Cadena Martinez**
 - **Jose Carlos Ordoñez Bravo**
 ---
-![Banner-Inicio](./sources/Banner.gif)
 
 ## 📚 Prácticas Realizadas
 
