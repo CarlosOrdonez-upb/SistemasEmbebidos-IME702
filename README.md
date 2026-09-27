@@ -27,8 +27,8 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 
 | [<img src="sources/carlos.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>El profe (Programacion)</b></sub>](#) | [<img src="sources/karol.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Karol (Documentacion)</b></sub>](#) | [<img src="sources/negrete.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Negrete (Compras)</b></sub>](#) | [<img src="sources/ivan.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Ivan (Prototipador)</b></sub>](#) | [<img src="sources/francisco.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Francisco (Investigacion)</b></sub>](#) |
 | :---: | :---: | :---: | :---: | :---: |
-| **Jose Carlos Ordoñez Bravo** | **Karol Maria Guadalupe Carrion Villagomez** | **Jorge Alberto Negrete Narnica** | **Calors Iván Hernandez Castro** | **José Francisco Cadena Martinez** |
-| *"Se mira bien ..."* | *"Asi no lo queria el profe!! "* | *"Ya pedi todo en MercadoLibre"* | *"Si quieres yo lo soldo"* | *"¿Alguien va al Oxxo? No?"* |
+| **Jose Carlos Ordoñez Bravo** | **Karol Maria Guadalupe Carrion Villagomez** | **Jorge Alberto Negrete Garnica** | **Carlos Iván Hernandez Castro** | **José Francisco Cadena Martinez** |
+| *"Se mira bien ..."* | *"Asi no lo queria el profe!! "* | *"Ya pedi todo en MercadoLibre"* | *"Si quieres yo lo hago"* | *"¿Alguien va al Oxxo?"* |
 ---
 
 ## 📚 Prácticas Realizadas
