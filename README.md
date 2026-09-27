@@ -22,13 +22,14 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 ---
 
 ## 👥 Equipo de Trabajo
-- **Jose Carlos Ordoñez Bravo**
+
 - **Jorge Alberto Negrete Garnica**
-- **Maria Carrio Villagomez**
+- **Maria Carrion Villagomez**
 - **Carlos Ivan Hernandez Castro**
 - **Jose Francisco Cadena Martinez**
-
+- **Jose Carlos Ordoñez Bravo**
 ---
+![Banner-Inicio](./sources/Banner.gif)
 
 ## 📚 Prácticas Realizadas
 
@@ -66,7 +67,7 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 ---
 ## ⚖️ Aviso Legal y Derechos de Autor
 
-© 2024 Equipo de Sistemas Embebidos (Carlos Ordóñez, Negrete, Iván, Karol, Francisco).  
+© 2026 Equipo de Sistemas Embebidos (Carlos Ordóñez, Negrete, Iván, Karol, Francisco).  
 **Todos los derechos reservados.**
 
 Este repositorio y su contenido (código fuente, diagramas, documentación y simulaciones) han sido desarrollados exclusivamente con fines académicos y evaluativos para la materia **IME702 - Sistemas Embebidos**. 
