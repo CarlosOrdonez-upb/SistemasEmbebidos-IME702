@@ -83,7 +83,7 @@ La interfaz Python y el ESP32 se comunican mediante un protocolo de texto plano 
 ---
 ##  Ver simulación
 
-  ![Simulación en Visual](./sources/Practica3.mp4)
+  ![Simulación en Visual](./sources/Practica3.gif)
 
 ---  
 ## ⚠️ Consideraciones de Seguridad
