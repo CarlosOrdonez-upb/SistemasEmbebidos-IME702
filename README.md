@@ -39,6 +39,8 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 | 02 | **[Control de Motorreductor con Relé](./Practica2/)** | Activación de un motor DC 3V-5V usando un módulo de relé como etapa de potencia. | ✅ Completada | [📄 Código](./Practica2/codigo/control_motor_rele.ino) • [📦 Materiales](./Practica2/materiales.md) |
 | 03 | **[Control de Llenado/Vaciado + GUI Python](./Practica3/)** | Sistema con sensor ultrasónico, paradas de seguridad y panel de control en Tkinter. | 🟨 Pendiente de revision | [📦 Materiales](./Practica3/materiales.md) |
 
+[🚀 Ver simulación interactiva en vivo](https://coe-embedded-lab.streamlit.app)
+
 ---
 
 ## 🛠️ Hardware Utilizado
