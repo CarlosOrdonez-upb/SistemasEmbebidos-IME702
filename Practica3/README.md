@@ -1,4 +1,4 @@
-# 🌊 Práctica 03: Control Automatizado de Llenado y Vaciado de Líquidos
+# Práctica 03: Control Automatizado de Llenado y Vaciado de Líquidos
 
 ## 📋 Objetivo
 Implementar un sistema de control de nivel de líquidos bidireccional utilizando un ESP32, sensor ultrasónico y bombas externas. El sistema garantiza la seguridad operativa mediante paradas automáticas por nivel (80% llenado ), exclusión mutua de actuadores y timeout de protección, todo monitoreado desde una interfaz gráfica de escritorio.
@@ -81,6 +81,10 @@ La interfaz Python y el ESP32 se comunican mediante un protocolo de texto plano 
 - `imagenes/` - Capturas de pantalla de la interfaz gráfica y montaje físico.
 
 ---
+##  Ver simulación
 
+  ![Simulación en Visual](./sources/Practica3.mp4)
+
+---  
 ## ⚠️ Consideraciones de Seguridad
 - Calibrar la constante de caudal (`ML_POR_SEGUNDO`) en el código Python midiendo el volumen real bombeado.
