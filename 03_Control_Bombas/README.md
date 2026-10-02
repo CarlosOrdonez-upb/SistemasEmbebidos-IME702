@@ -88,6 +88,7 @@ La interfaz Python y el ESP32 se comunican mediante un protocolo de texto plano 
 
 ![Simulación en Visual](Practica3.gif))
 
+> 🌐 **Prueba tu mismo los entornos:** Todos los proyectos cuentan con un [Gemelo Digital para interactuar ](https://coe-embedded-lab.streamlit.app).
 
 ---  
 
@@ -106,7 +107,7 @@ En este modo, el sistema respeta los límites mínimo y máximo configurados en 
 - Rango **50% - 60%** (Prueba de respuesta rápida en rango medio)
 
 ![Demostración Modo Automático](sources/10-50.gif)
-> *Nota: Observa cómo la barra de progreso y el indicador LED cambian de color (Azul = Normal, Naranja/Rojo = Límite) y cómo el sistema se detiene automáticamente al alcanzar el porcentaje configurado.*
+> *Nota: Observa cómo la barra de progreso y el indicador LED cambian de color (Verde = lleno, Naranja = intermedio, Rojo = Vacio) y cómo el sistema se detiene automáticamente al alcanzar el porcentaje configurado.*
 
 ---
 
@@ -118,7 +119,7 @@ Este modo permite al operador tomar el control total de las bombas, ignorando te
 - Activación individual de la bomba de vaciado (Depósito A envía líquido).
 - Parada de emergencia inmediata desde la interfaz.
 
-![Demostración Modo Manual](sources/demo_bombas_manual.gif)
+![Demostración Modo Manual](sources/llenado.gif)
 > *Nota: Se observa la respuesta inmediata de la interfaz al presionar los botones manuales y la actualización en tiempo real de la telemetría enviada por el ESP32.*
 
 ---

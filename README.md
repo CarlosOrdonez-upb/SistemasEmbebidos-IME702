@@ -40,7 +40,7 @@ Repositorio dedicado al desarrollo, documentación y simulación de proyectos de
 | 03 | **[Control de Bombas + GUI](./03_Control_Bombas/)** | Sistema con sensor ultrasónico, paradas de seguridad y panel de control. | ✅ Completado | [📄 Código](./03_Control_Bombas/codigo/) • [📦 Materiales](./03_Control_Bombas/materiales.md) |
 | 04 | **[Caja Térmica Inteligente](./04_Caja_Termica/)** | Cámara con control por histéresis, módulo Peltier, servos para purga y foco. | 🟨 En desarrollo | [📄 Código](./04_Caja_Termica/codigo/) • [📦 Materiales](./04_Caja_Termica/materiales.md) |
 
-> 🌐 **Simulación Interactiva:** Todos los proyectos cuentan con un [Gemelo Digital y Panel de Control en vivo aquí](https://coe-embedded-lab.streamlit.app).
+> 🌐 **Prueba tu mismo los entornos:** Todos los proyectos cuentan con un [Gemelo Digital para interactuar ](https://coe-embedded-lab.streamlit.app).
 
 ---
 

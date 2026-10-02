@@ -37,6 +37,7 @@ ESP32 MÓDULO RELÉ MOTOR
 └── 5V ──────────────── VCC │ │
 │ │
 ```
+> 🌐 **Prueba tu mismo los entornos:** Todos los proyectos cuentan con un [Gemelo Digital para interactuar ](https://coe-embedded-lab.streamlit.app).
 
 ## 💡 Funcionamiento
 - **Botón ON (GPIO 4):** Activa el relé (GPIO 2 en LOW), cerrando el circuito del motor

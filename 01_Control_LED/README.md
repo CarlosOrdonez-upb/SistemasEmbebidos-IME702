@@ -48,3 +48,4 @@ Implementar un circuito que permita encender y apagar un LED utilizando dos boto
 ##  Ver simulación
   ![Simulación en Wokwi](SimulacionLED.gif)
 
+> 🌐 **Prueba tu mismo los entornos:** Todos los proyectos cuentan con un [Gemelo Digital para interactuar ](https://coe-embedded-lab.streamlit.app).
