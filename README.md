@@ -15,7 +15,7 @@ Repositorio dedicado al desarrollo, documentación y simulación de proyectos de
   </tr>
   <tr>
     <td><img src="https://img.shields.io/badge/Python-3.x-yellow?logo=python&logoColor=white" width="120"/></td>
-    <td><img src="https://img.shields.io/badge/PyQt5-GUI-blue?logo=qt&logoColor=white" width="120"/></td>
+    <td><img src="https://img.shields.io/badge/Streamlit-Web_App-red?logo=streamlit&logoColor=white" width="130"/></td>
     <td><img src="https://img.shields.io/badge/GitHub-Version_Control-gray?logo=github&logoColor=white" width="160"/></td>
   </tr>
 </table>
@@ -26,8 +26,8 @@ Repositorio dedicado al desarrollo, documentación y simulación de proyectos de
 
 | <img src="sources/carlos.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Coach (Líder)</b></sub> | <img src="sources/karol.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Documentación</b></sub> | <img src="sources/negrete.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Logística</b></sub> | <img src="sources/ivan.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Prototipador</b></sub> | <img src="sources/francisco.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Investigación</b></sub> |
 | :---: | :---: | :---: | :---: | :---: |
-| **Jose Carlos** | **Karol Maria** | **Jorge Alberto** | **Carlos Iván** | **José Francisco** |
-| *"¡Se mira bien...!"* | *"Que son 13 !!"* | *"Ya pedí todo en MercadoLibre"* | *"Si quieres, yo lo hago"* | *"¿Alguien va al Oxxo?"* |
+| **Jose Carlos Ordoñez Bravo** | **Karol Maria Guadalupe Carrion Villagomez** | **Jorge Alberto Negrete Garnica** | **Carlos Iván Herandez Castro** | **José Francisco Cadena Martinez** |
+| *"Se mira bien ...!"* | *"Que son 13 !!"* | *"Ya pedí todo en MercadoLibre"* | *"Si quieres, yo lo hago"* | *"¿Alguien va al Oxxo?"* |
 
 ---
 
@@ -37,24 +37,16 @@ Repositorio dedicado al desarrollo, documentación y simulación de proyectos de
 |---|----------|-------------|--------|---------------|
 | 01 | **[Control de LED](./01_Control_LED/)** | Lógica de botones y GPIOs con pull-up interna. | ✅ Completado | [📄 Código](./01_Control_LED/codigo/) • [📦 Materiales](./01_Control_LED/materiales.md) |
 | 02 | **[Control de Relé](./02_Control_Rele/)** | Etapa de potencia y aislamiento para motores DC. | ✅ Completado | [📄 Código](./02_Control_Rele/codigo/) • [📦 Materiales](./02_Control_Rele/materiales.md) |
-| 03 | **[Control de Bombas + GUI](./03_Control_Bombas/)** | Sistema con sensor ultrasónico, paradas de seguridad y panel de control en Tkinter. | ✅ Completado | [📄 Código](./03_Control_Bombas/codigo/) • [📦 Materiales](./03_Control_Bombas/materiales.md) |
-| 04 | **[Caja Térmica Inteligente](./04_Caja_Termica/)** | Cámara con control PID/histéresis, módulo Peltier, servos para purga y simulación en PyQt5. | 🟨 En desarrollo | [📄 Firmware](./04_Caja_Termica/firmware/) • [💻 Simulación](./04_Caja_Termica/simulacion/) |
+| 03 | **[Control de Bombas + GUI](./03_Control_Bombas/)** | Sistema con sensor ultrasónico, paradas de seguridad y panel de control. | ✅ Completado | [📄 Código](./03_Control_Bombas/codigo/) • [📦 Materiales](./03_Control_Bombas/materiales.md) |
+| 04 | **[Caja Térmica Inteligente](./04_Caja_Termica/)** | Cámara con control por histéresis, módulo Peltier, servos para purga y foco. | 🟨 En desarrollo | [📄 Código](./04_Caja_Termica/codigo/) • [📦 Materiales](./04_Caja_Termica/materiales.md) |
+
+> 🌐 **Simulación Interactiva:** Todos los proyectos cuentan con un [Gemelo Digital y Panel de Control en vivo aquí](https://coe-embedded-lab.streamlit.app).
 
 ---
 
-## 🌟 Destacado Técnico: Caja Térmica (Proyecto 04)
 
-Este sistema representa un salto en complejidad, implementando conceptos de control térmico real:
-1. **Lógica de Purga Automática:** Si el *setpoint* cambia drásticamente (≥ 2.5°C), el sistema abre las tapas mediante servomotores, activa los ventiladores para ventilar el aire estancado y cierra las tapas para estabilizar la temperatura rápidamente.
-2. **Control por Histéresis:** Evita el ciclado excesivo del foco y el módulo Peltier, protegiendo los componentes.
-3. **Simulación Visual (PyQt5):** Interfaz gráfica que renderiza en tiempo real el estado de los ventiladores, el color ambiente según la temperatura y la animación de partículas de flujo de aire.
-
----
-
-## 🛠️ Hardware General Utilizado
-- **Microcontrolador:** ESP32 DevKit V1
-- **Sensores:** DHT11 (Temperatura/Humedad), HC-SR04 (Ultrasonido).
-- **Actuadores:** Relés, Motorreductores, Bombas DC, Módulo Peltier, Servomotores.
+> *Este repositorio se actualizará según los avances del curso.*
+> *Desarrollado como parte del curso IME702 - Universidad Politécnica del Bicentenario.*
 
 > *Este repositorio se actualizará según los avances del curso.*
 
