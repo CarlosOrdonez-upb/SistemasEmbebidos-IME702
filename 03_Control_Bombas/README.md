@@ -8,21 +8,24 @@ Implementar un sistema de control de nivel de líquidos bidireccional utilizando
 
 ---
 
-## 🛠️ Arquitectura del Sistema
+## ⚙️ Lógica del Sistema
+El sistema gestiona la transferencia de líquido entre dos depósitos (A y B) con una capacidad total conservada de 1000 ml. 
+- **Exclusión Mutua:** El firmware garantiza que ambas bombas nunca se activen simultáneamente, evitando cortocircuitos o desbordamientos.
+- **Conservación de Masa:** El volumen transferido se calcula en tiempo real; lo que gana un depósito, lo pierde el otro.
+- **Protección de Hardware:** Incluye un *timeout* de seguridad (apagado forzoso tras 60s de operación continua) y detección de fallos del sensor ultrasónico.
 
-### Hardware
-- **Microcontrolador:** ESP32 DevKit V1.
-- **Sensores:** HC-SR04 (Ultrasonido) con filtro de mediana (5 lecturas) para eliminar ruido por turbulencia.
-- **Actuadores:** 2x Bombas de agua DC R385 controladas mediante módulo de relé de 2 canales.
-- **Alimentación:** Fuente segregada (12V para bombas, 5V para lógica) con tierras (GND) unidas en punto común para evitar activaciones fantasma.
+---
 
-### Lógica del Firmware (ESP32)
-1. **Exclusión Mutua Estricta:** Nunca se permiten ambas bombas activas simultáneamente.
-2. **Paradas Automáticas Inteligentes:** 
-   - Llenado: Se detiene al alcanzar el **80%** (evita rebotes del sensor por tensión superficial).
-   - Vaciado: Se detiene al llegar al **2%** (protege la bomba contra funcionamiento en seco).
-3. **Timeout de Seguridad:** Apagado forzoso si una bomba opera más de **60 segundos** sin intervención.
-4. **Gestión de Fallos:** Si el sensor ultrasónico falla, el sistema entra en modo seguro y solo responde a comandos manuales.
+## 🛠️ Hardware y Software Utilizado
+
+| Categoría | Componentes / Herramientas |
+| :--- | :--- |
+| **Microcontrolador** | ESP32 DevKit V1 |
+| **Sensores** | HC-SR04 (Ultrasonido para medición de nivel no invasiva) |
+| **Actuadores** | 2x Bombas de agua DC (R385), Módulo de Relé de 2 canales |
+| **Interfaz Humana** | Aplicación de escritorio en Python (Tkinter + PySerial) |
+| **Entorno de Desarrollo** | Arduino IDE (Firmware), VS Code (Python) |
+
 
 ### Aplicación de Escritorio (Python + Tkinter)
 - **Simulación Visual:** Canvas que representa el nivel del tanque con cambio de color dinámico (🔵 Azul = Normal, 🔴 Rojo = Crítico ≤20%, 🟠 Naranja = Lleno ≥80%).
@@ -87,5 +90,38 @@ La interfaz Python y el ESP32 se comunican mediante un protocolo de texto plano 
 
 
 ---  
+
+## 🎥 Demostraciones y Pruebas Realizadas
+
+A continuación se presentan las pruebas de validación del sistema, demostrando su comportamiento bajo diferentes configuraciones de límites operativos.
+
+### 1. Modo Automático (Llenado y Drenado con Límites)
+En este modo, el sistema respeta los límites mínimo y máximo configurados en la interfaz. Al alcanzar el límite, el ESP32 envía una señal de `AUTO_STOP` y la interfaz detiene la bomba, invirtiendo el ciclo si está en modo bucle, o deteniéndose por seguridad.
+
+**Casos de prueba validados:**
+- Rango **10% - 50%** (Drenado profundo y llenado parcial)
+- Rango **20% - 60%** (Operación estándar de mantenimiento)
+- Rango **20% - 80%** (Rango operativo recomendado por defecto)
+- Rango **40% - 50%** (Zona estrecha de alta precisión)
+- Rango **50% - 60%** (Prueba de respuesta rápida en rango medio)
+
+![Demostración Modo Automático](sources/10-50.gif)
+> *Nota: Observa cómo la barra de progreso y el indicador LED cambian de color (Azul = Normal, Naranja/Rojo = Límite) y cómo el sistema se detiene automáticamente al alcanzar el porcentaje configurado.*
+
+---
+
+### 2. Modo Manual (Control Directo)
+Este modo permite al operador tomar el control total de las bombas, ignorando temporalmente los límites automáticos para tareas de mantenimiento, purga o calibración. El sistema sigue mostrando advertencias visuales si se exceden los rangos seguros, pero permite la acción bajo responsabilidad del usuario.
+
+**Pruebas realizadas:**
+- Activación individual de la bomba de llenado (Depósito A recibe líquido).
+- Activación individual de la bomba de vaciado (Depósito A envía líquido).
+- Parada de emergencia inmediata desde la interfaz.
+
+![Demostración Modo Manual](sources/demo_bombas_manual.gif)
+> *Nota: Se observa la respuesta inmediata de la interfaz al presionar los botones manuales y la actualización en tiempo real de la telemetría enviada por el ESP32.*
+
+---
+
 ## ⚠️ Consideraciones de Seguridad
 - Calibrar la constante de caudal (`ML_POR_SEGUNDO`) en el código Python midiendo el volumen real bombeado.
