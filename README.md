@@ -3,7 +3,7 @@
 
 # ⚙️ Sistemas Embebidos - IME702
 
-Repositorio dedicado al desarrollo, documentación y simulación de las prácticas de laboratorio de la materia de Sistemas Embebidos impartida por el Dr.Hugo Antonio Mendez Guzman.
+Repositorio dedicado al desarrollo, documentación y simulación de proyectos de laboratorio de la materia de Sistemas Embebidos, impartida por el Dr. Hugo Antonio Méndez Guzmán.
 
 ## 💻 Tecnologías y Herramientas
 
@@ -14,8 +14,8 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
     <td><img src="https://img.shields.io/badge/C%2B%2B-Programming-blue?logo=c%2B%2B&logoColor=white" width="140"/></td>
   </tr>
   <tr>
-    <td><img src="https://img.shields.io/badge/Wokwi-Simulation-purple?logo=google-chrome&logoColor=white" width="150"/></td>
-    <td><img src="https://img.shields.io/badge/Framework-Arduino-teal?logo=arduino&logoColor=white" width="140"/></td>
+    <td><img src="https://img.shields.io/badge/Python-3.x-yellow?logo=python&logoColor=white" width="120"/></td>
+    <td><img src="https://img.shields.io/badge/PyQt5-GUI-blue?logo=qt&logoColor=white" width="120"/></td>
     <td><img src="https://img.shields.io/badge/GitHub-Version_Control-gray?logo=github&logoColor=white" width="160"/></td>
   </tr>
 </table>
@@ -24,42 +24,37 @@ Repositorio dedicado al desarrollo, documentación y simulación de las práctic
 
 ## 👥 Equipo de Trabajo
 
-
-| [<img src="sources/carlos.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>El profe (Programacion)</b></sub>](#) | [<img src="sources/karol.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Karol (Documentacion)</b></sub>](#) | [<img src="sources/negrete.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Negrete (Compras)</b></sub>](#) | [<img src="sources/ivan.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Ivan (Prototipador)</b></sub>](#) | [<img src="sources/francisco.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Francisco (Investigacion)</b></sub>](#) |
+| <img src="sources/carlos.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Coach (Líder)</b></sub> | <img src="sources/karol.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Documentación</b></sub> | <img src="sources/negrete.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Logística</b></sub> | <img src="sources/ivan.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Prototipador</b></sub> | <img src="sources/francisco.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Investigación</b></sub> |
 | :---: | :---: | :---: | :---: | :---: |
-| **Jose Carlos Ordoñez Bravo** | **Karol Maria Guadalupe Carrion Villagomez** | **Jorge Alberto Negrete Garnica** | **Carlos Iván Hernandez Castro** | **José Francisco Cadena Martinez** |
-| *"Se mira bien ..."* | *"Asi no lo queria el profe!! "* | *"Ya pedi todo en MercadoLibre"* | *"Si quieres yo lo hago"* | *"¿Alguien va al Oxxo?"* |
+| **Jose Carlos** | **Karol Maria** | **Jorge Alberto** | **Carlos Iván** | **José Francisco** |
+| *"¡Se mira bien...!"* | *"Que son 13 !!"* | *"Ya pedí todo en MercadoLibre"* | *"Si quieres, yo lo hago"* | *"¿Alguien va al Oxxo?"* |
+
 ---
 
-## 📚 Prácticas Realizadas
+## 📚 Proyectos Realizados
 
-| # | Práctica | Descripción | Estado | Links Rápidos |
+| # | Proyecto | Descripción | Estado | Links Rápidos |
 |---|----------|-------------|--------|---------------|
-| 01 | **[Control de LED con Botones](./Practica1/)** | Encendido y apagado de un LED mediante dos pulsadores. | ✅ Completada | [📄 Código](./Practica1/codigo/control_led.ino) • [📦 Materiales](./Practica1/materiales.md) |
-| 02 | **[Control de Motorreductor con Relé](./Practica2/)** | Activación de un motor DC 3V-5V usando un módulo de relé como etapa de potencia. | ✅ Completada | [📄 Código](./Practica2/codigo/control_motor_rele.ino) • [📦 Materiales](./Practica2/materiales.md) |
-| 03 | **[Control de Llenado/Vaciado + GUI Python](./Practica3/)** | Sistema con sensor ultrasónico, paradas de seguridad y panel de control en Tkinter. | 🟨 Pendiente de revision | [📦 Materiales](./Practica3/materiales.md) |
-
-[🚀 Ver simulación interactiva en vivo](https://coe-embedded-lab.streamlit.app)
+| 01 | **[Control de LED](./01_Control_LED/)** | Lógica de botones y GPIOs con pull-up interna. | ✅ Completado | [📄 Código](./01_Control_LED/codigo/) • [📦 Materiales](./01_Control_LED/materiales.md) |
+| 02 | **[Control de Relé](./02_Control_Rele/)** | Etapa de potencia y aislamiento para motores DC. | ✅ Completado | [📄 Código](./02_Control_Rele/codigo/) • [📦 Materiales](./02_Control_Rele/materiales.md) |
+| 03 | **[Control de Bombas + GUI](./03_Control_Bombas/)** | Sistema con sensor ultrasónico, paradas de seguridad y panel de control en Tkinter. | ✅ Completado | [📄 Código](./03_Control_Bombas/codigo/) • [📦 Materiales](./03_Control_Bombas/materiales.md) |
+| 04 | **[Caja Térmica Inteligente](./04_Caja_Termica/)** | Cámara con control PID/histéresis, módulo Peltier, servos para purga y simulación en PyQt5. | 🟨 En desarrollo | [📄 Firmware](./04_Caja_Termica/firmware/) • [💻 Simulación](./04_Caja_Termica/simulacion/) |
 
 ---
 
-## 🛠️ Hardware Utilizado
+## 🌟 Destacado Técnico: Caja Térmica (Proyecto 04)
+
+Este sistema representa un salto en complejidad, implementando conceptos de control térmico real:
+1. **Lógica de Purga Automática:** Si el *setpoint* cambia drásticamente (≥ 2.5°C), el sistema abre las tapas mediante servomotores, activa los ventiladores para ventilar el aire estancado y cierra las tapas para estabilizar la temperatura rápidamente.
+2. **Control por Histéresis:** Evita el ciclado excesivo del foco y el módulo Peltier, protegiendo los componentes.
+3. **Simulación Visual (PyQt5):** Interfaz gráfica que renderiza en tiempo real el estado de los ventiladores, el color ambiente según la temperatura y la animación de partículas de flujo de aire.
+
+---
+
+## 🛠️ Hardware General Utilizado
 - **Microcontrolador:** ESP32 DevKit V1
-- **Entorno de Desarrollo:** Arduino IDE
-- **Componentes:** Botones pulsadores (4 pines), LEDs, Motorreductor 3V-5V, Módulo de Relé, Resistencias, Protoboard, Cables Dupont.
-
-## 📋 Notas Importantes
-- Cada carpeta de práctica (`Practica1`, `Practica2`) contiene su propio `README.md` con el diagrama de conexiones, objetivo y funcionamiento detallado.
-- Se utiliza la configuración de **pull-up interna** de la ESP32 para los botones, por lo que se activan en estado `LOW`.
-- El módulo de relé se activa con nivel `LOW` en el GPIO correspondiente.
-
----
-
-## 🗺️ Roadmap (Próximas Prácticas)
-
-- [ ] **Práctica 03:** Control de Llenado/Vaciado
-- [ ] **Práctica 04:** Control de temperatura (UART)
-- [ ] **Práctica 05:** Pendiente....
+- **Sensores:** DHT11 (Temperatura/Humedad), HC-SR04 (Ultrasonido).
+- **Actuadores:** Relés, Motorreductores, Bombas DC, Módulo Peltier, Servomotores.
 
 > *Este repositorio se actualizará según los avances del curso.*
 
