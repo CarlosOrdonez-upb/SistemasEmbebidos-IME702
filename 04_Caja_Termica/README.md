@@ -50,7 +50,7 @@ Se desarrolló una aplicación de escritorio en Python utilizando **PyQt5** que 
 - **Ciclo térmico:** Permite elegir el primer límite, muestra avisos si la temperatura está fuera del rango y ofrece **Detener todo**.
 - **Purga:** Se activa automáticamente al enfriar 2.5 °C desde la máxima y puede solicitarse manualmente; al concluir, el ciclo continúa.
 - **Aviso de condensación:** Muestra una recomendación cuando el punto de rocío alcanza la temperatura mínima configurada; no inicia una purga por sí solo.
-- **Comunicación Serial:** Se conecta automáticamente al puerto COM del ESP32 (115200 baudios), envía el `SETRANGE` y recibe el `STATUS` cada 500 ms. El firmware debe ser compatible con el protocolo de ciclo para habilitar los botones de inicio y detención.
+- **Comunicación Serial:** Selecciona el puerto COM del ESP32 y pulsa **Conectar** (115200 baudios); la aplicación no se conecta ni inicia el control térmico automáticamente. Envía el `SETRANGE` al ajustar los límites y recibe el `STATUS` cada 500 ms. El firmware debe ser compatible con el protocolo de ciclo para habilitar los botones de inicio y detención.
 
 ##  Ver simulación
   ![Simulacion](sources/caja1.gif)

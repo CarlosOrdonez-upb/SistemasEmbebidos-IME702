@@ -228,8 +228,6 @@ class SimulacionCuarto(QMainWindow):
         self.timer_animacion.start(30)
 
         self.cargar_puertos()
-        if self.combo_puertos.count():
-            self.conectar_serial()
 
     def dibujar_caja(self):
         self.scene.setSceneRect(0, 0, 500, 500)
@@ -888,7 +886,7 @@ class SimulacionCuarto(QMainWindow):
             and not self.prueba_conexion_activa
             and self.modo_termico != "PURGA"
         )
-        self.boton_detener_ciclo.setEnabled(conectado and self.ciclo_activo)
+        self.boton_detener_ciclo.setEnabled(conectado and self.ciclo_soportado)
         self.spin_temp_minima.setEnabled(not self.ciclo_activo)
         self.spin_temp_maxima.setEnabled(not self.ciclo_activo)
 
