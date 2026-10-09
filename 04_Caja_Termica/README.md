@@ -10,13 +10,13 @@ Diseñar e implementar una cámara térmica controlada por un microcontrolador E
 
 El firmware implementa un control robusto basado en tres pilares fundamentales:
 
-1. **Control por rango:**
-   Calienta desde el límite mínimo hasta alcanzar el máximo y luego enfría hasta alcanzar de nuevo el mínimo, manteniendo la dirección térmica dentro del rango.
-2. **Purga manual y riesgo de condensación:**
-   La interfaz recomienda purgar cuando el punto de rocío calculado alcanza o supera la temperatura mínima configurada. La recomendación no activa la purga: al pulsar **Iniciar purga**, comienza de inmediato la secuencia manual y los ventiladores extraen aire durante 20 segundos. También hay un botón para solicitarla manualmente:
+1. **Ciclo térmico continuo:**
+   Al pulsar **Iniciar ciclo térmico**, el usuario elige si quiere alcanzar primero la temperatura mínima o la máxima. El ESP32 llega a ese límite y alterna entre ambos hasta recibir **Detener todo**. Si la temperatura empieza fuera del rango, primero llega al límite elegido. Los límites no se pueden editar durante el ciclo.
+2. **Purga automática y manual:**
+   Durante cada tramo de enfriamiento, el ESP32 inicia una purga cuando la temperatura cae 2.5 °C por debajo del límite máximo. No se activa durante el calentamiento. La interfaz también recomienda purgar cuando el punto de rocío calculado alcanza o supera la temperatura mínima configurada; esta recomendación no activa la purga. El usuario puede solicitarla manualmente durante el ciclo: el control térmico se pausa mientras los ventiladores extraen aire durante 20 segundos y luego continúa hacia el mismo límite.
    - Abre las tapas superiores mediante servomotores (SG90).
    - Activa los ventiladores de extracción para renovar el aire estancado.
-   - Cierra las tapas al terminar los 20 segundos de extracción y reanuda el control térmico.
+   - Cierra las tapas al terminar los 20 segundos de extracción y reanuda el ciclo térmico.
 3. **Protecciones de seguridad:**
    Una lectura del DHT11 menor de 10 °C o mayor de 60 °C, o un error del sensor, apaga foco, Peltier y ventiladores, cierra las tapas y reporta `STATUS,ERROR`. Se reanuda automáticamente cuando vuelve una lectura válida. El riesgo de condensación se estima con el punto de rocío y la temperatura mínima configurada, usada como aproximación de la superficie fría porque no hay un sensor de superficie.
    El foco tiene un máximo de 10 minutos continuos seguido de 1 minuto de descanso; la Peltier tiene un máximo de 15 minutos seguido de 2 minutos de descanso. Si se pierden comandos seriales durante 30 segundos, se conserva el rango configurado y el control térmico autónomo sigue funcionando.
@@ -47,8 +47,10 @@ Se desarrolló una aplicación de escritorio en Python utilizando **PyQt5** que 
 - **Visualización en Tiempo Real:** Representación gráfica de la caja, con animación de los ventiladores girando y las tapas abriéndose/cerrándose suavemente.
 - **Partículas de Flujo:** Animación de partículas que simulan el flujo de aire caliente (rojo) o frío (azul) dependiendo del modo térmico.
 - **Cambio de Ambiente:** El color de fondo de la cámara cambia gradualmente (gradiente) reflejando la temperatura actual.
-- **Aviso de condensación y purga manual:** Muestra la recomendación cuando el punto de rocío alcanza la temperatura mínima configurada; al confirmar, los ventiladores comienzan la extracción y funcionan durante 20 segundos.
-- **Comunicación Serial:** Se conecta automáticamente al puerto COM del ESP32 (115200 baudios) para enviar el `SETRANGE` y recibir el `STATUS` cada 500ms.
+- **Ciclo térmico:** Permite elegir el primer límite, muestra avisos si la temperatura está fuera del rango y ofrece **Detener todo**.
+- **Purga:** Se activa automáticamente al enfriar 2.5 °C desde la máxima y puede solicitarse manualmente; al concluir, el ciclo continúa.
+- **Aviso de condensación:** Muestra una recomendación cuando el punto de rocío alcanza la temperatura mínima configurada; no inicia una purga por sí solo.
+- **Comunicación Serial:** Se conecta automáticamente al puerto COM del ESP32 (115200 baudios), envía el `SETRANGE` y recibe el `STATUS` cada 500 ms. El firmware debe ser compatible con el protocolo de ciclo para habilitar los botones de inicio y detención.
 
 ##  Ver simulación
   ![Simulacion](sources/caja1.gif)
@@ -64,9 +66,11 @@ La interfaz y el ESP32 se comunican mediante texto plano estructurado:
 | Dirección | Comando / Formato | Descripción |
 | :--- | :--- | :--- |
 | **PC → ESP32** | `SETRANGE,28.0,35.0` | Establece los límites de temperatura (ambos entre 20.0 y 60.0 °C, con mínimo menor que máximo). |
-| **PC → ESP32** | `PURGE` | Solicita manualmente una purga; el firmware la inicia si el sensor está válido y no hay otra operación activa. |
-| **ESP32 → PC** | `STATUS,temp,foco,peltier,fans,tapas,FASE,humedad,tempMin,tempMax` | Paquete de telemetría completo con el rango configurado. |
-| **ESP32 → PC** | `STATUS,ERROR,0,0,0,0,SENSOR_ERROR,0.0,28.0,35.0` | Alerta crítica por fallo de sensor, incluyendo el rango configurado. |
+| **PC → ESP32** | `CYCLE,MIN` / `CYCLE,MAX` | Inicia el ciclo con el límite indicado como primera meta. |
+| **PC → ESP32** | `STOP` | Detiene el ciclo y apaga foco, Peltier, ventiladores y compuertas. |
+| **PC → ESP32** | `PURGE` | Solicita manualmente una purga; pausa el control térmico y lo reanuda al terminar. |
+| **ESP32 → PC** | `STATUS,temp,foco,peltier,fans,tapas,FASE,humedad,tempMin,tempMax,cicloActivo` | Telemetría y estado del ciclo; las fases `CYCLE_*` indican dirección y límite objetivo. |
+| **ESP32 → PC** | `STATUS,ERROR,0,0,0,0,SENSOR_ERROR,0.0,28.0,35.0,cicloActivo` | Alerta crítica por fallo de sensor, incluyendo el rango y estado del ciclo. |
 | **ESP32 → PC** | `WARN,DEWPOINT,RISK,puntoRocio,tempMin` | Riesgo estimado de condensación; la interfaz presenta la recomendación sin activar la purga. |
 | **ESP32 → PC** | `WARN,DEWPOINT,CLEAR` | El punto de rocío volvió a estar por debajo de la temperatura mínima configurada. |
 

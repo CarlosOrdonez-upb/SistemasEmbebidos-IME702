@@ -23,6 +23,7 @@ const float TEMPERATURA_CONFIG_MINIMA = 20.0f;
 const float TEMPERATURA_CONFIG_MAXIMA = 60.0f;
 const float TEMPERATURA_SENSOR_MINIMA = 10.0f;
 const float TEMPERATURA_SENSOR_MAXIMA = 60.0f;
+const float DIFERENCIA_PURGA_AUTOMATICA = 2.5f;
 
 const unsigned long INTERVALO_SENSOR_MS = 2000;
 const unsigned long INTERVALO_ESTADO_MS = 500;
@@ -55,6 +56,7 @@ Servo servoTapa2;
 
 Fase fase = NORMAL;
 ModoTermico modoTermico = MODO_MANTENER;
+ModoTermico modoCiclo = MODO_CALENTAR;
 float tempMinima = 28.0f;
 float tempMaxima = 35.0f;
 float temperaturaActual = NAN;
@@ -62,6 +64,10 @@ float humedadActual = NAN;
 bool sensorValido = false;
 bool primeraLectura = true;
 bool modoPrueba = false;
+bool cicloActivo = false;
+bool controlDetenido = true;
+bool objetivoCicloMaximo = true;
+bool purgaAutomaticaEnBajada = false;
 bool riesgoPuntoRocio = false;
 bool timeoutComunicacionReportado = false;
 bool focoEnDescanso = false;
@@ -216,11 +222,47 @@ void iniciarPurga(unsigned long ahora) {
   inicioFaseMs = ahora;
 }
 
+void iniciarCiclo(bool objetivoMaximo) {
+  cicloActivo = true;
+  controlDetenido = false;
+  objetivoCicloMaximo = objetivoMaximo;
+  purgaAutomaticaEnBajada = false;
+  cambiarFase(NORMAL);
+
+  float objetivo = objetivoMaximo ? tempMaxima : tempMinima;
+  if (temperaturaActual == objetivo) {
+    objetivoCicloMaximo = !objetivoMaximo;
+    modoCiclo = objetivoMaximo ? MODO_ENFRIAR : MODO_CALENTAR;
+  } else if (temperaturaActual < objetivo) {
+    modoCiclo = MODO_CALENTAR;
+  } else {
+    modoCiclo = MODO_ENFRIAR;
+  }
+  cambiarModoTermico(modoCiclo);
+  escribirSalidas(false, false, false);
+}
+
+void detenerControl() {
+  cicloActivo = false;
+  controlDetenido = true;
+  modoPrueba = false;
+  purgaAutomaticaEnBajada = false;
+  cambiarModoTermico(MODO_MANTENER);
+  cambiarFase(sensorValido ? NORMAL : ERROR_SENSOR);
+  servoTapa1.write(SERVO_CERRADO);
+  servoTapa2.write(SERVO_CERRADO);
+  escribirSalidas(false, false, false);
+}
+
 void procesarComando(char *comando, unsigned long ahora) {
   ultimoComandoMs = ahora;
   timeoutComunicacionReportado = false;
   if (strcmp(comando, "TEST,1") == 0 || strcmp(comando, "TEST,0") == 0) {
     bool activar = comando[5] == '1';
+    if (activar && (cicloActivo || fase != NORMAL)) {
+      Serial.println("ERR,TEST,BUSY");
+      return;
+    }
     if (modoPrueba != activar) {
       modoPrueba = activar;
       cambiarFase(sensorValido ? NORMAL : ERROR_SENSOR);
@@ -258,7 +300,38 @@ void procesarComando(char *comando, unsigned long ahora) {
     return;
   }
 
+  if (strcmp(comando, "STOP") == 0) {
+    detenerControl();
+    Serial.println("ACK,STOP,OK");
+    return;
+  }
+
+  if (strcmp(comando, "CYCLE,MIN") == 0 ||
+      strcmp(comando, "CYCLE,MAX") == 0) {
+    if (!sensorValido) {
+      Serial.println("ERR,CYCLE,SENSOR");
+      return;
+    }
+    if (modoPrueba) {
+      Serial.println("ERR,CYCLE,TESTING");
+      return;
+    }
+    if (fase != NORMAL || cicloActivo) {
+      Serial.println("ERR,CYCLE,BUSY");
+      return;
+    }
+    bool objetivoMaximo = comando[7] == 'A';
+    iniciarCiclo(objetivoMaximo);
+    Serial.print("ACK,CYCLE,STARTED,");
+    Serial.println(objetivoMaximo ? "MAX" : "MIN");
+    return;
+  }
+
   if (strncmp(comando, "SETRANGE,", 9) != 0) {
+    return;
+  }
+  if (cicloActivo) {
+    Serial.println("ERR,SETRANGE,BUSY");
     return;
   }
 
@@ -388,7 +461,9 @@ void actualizarPurga(unsigned long ahora) {
     case PURGA_CIERRE:
       if (ahora - inicioFaseMs >= TIEMPO_SERVO_MS) {
         cambiarFase(NORMAL);
-        cambiarModoTermico(MODO_MANTENER);
+        if (!cicloActivo && !controlDetenido) {
+          cambiarModoTermico(MODO_MANTENER);
+        }
       }
       break;
     default:
@@ -407,7 +482,32 @@ void actualizarControlTermico() {
     return;
   }
 
-  if (temperaturaActual <= tempMinima) {
+  if (controlDetenido) {
+    cambiarModoTermico(MODO_MANTENER);
+    escribirSalidas(false, false, false);
+    return;
+  }
+
+  if (cicloActivo) {
+    float objetivo = objetivoCicloMaximo ? tempMaxima : tempMinima;
+    bool objetivoAlcanzado = modoCiclo == MODO_CALENTAR
+        ? temperaturaActual >= objetivo
+        : temperaturaActual <= objetivo;
+    if (objetivoAlcanzado) {
+      objetivoCicloMaximo = !objetivoCicloMaximo;
+      modoCiclo = objetivoCicloMaximo ? MODO_CALENTAR : MODO_ENFRIAR;
+      purgaAutomaticaEnBajada = false;
+    }
+
+    if (!objetivoCicloMaximo && modoCiclo == MODO_ENFRIAR &&
+        !purgaAutomaticaEnBajada &&
+        temperaturaActual <= tempMaxima - DIFERENCIA_PURGA_AUTOMATICA) {
+      purgaAutomaticaEnBajada = true;
+      iniciarPurga(millis());
+      return;
+    }
+    cambiarModoTermico(modoCiclo);
+  } else if (temperaturaActual <= tempMinima) {
     cambiarModoTermico(MODO_CALENTAR);
   } else if (temperaturaActual >= tempMaxima) {
     cambiarModoTermico(MODO_ENFRIAR);
@@ -445,6 +545,15 @@ const char *nombreFase() {
     case PURGA_CIERRE: return "PURGE_CLOSING";
     case ERROR_SENSOR: return "SENSOR_ERROR";
     case NORMAL:
+      if (controlDetenido) return "STOPPED";
+      if (cicloActivo) {
+        if (modoCiclo == MODO_CALENTAR) {
+          return objetivoCicloMaximo
+              ? "CYCLE_HEATING_MAX" : "CYCLE_HEATING_MIN";
+        }
+        return objetivoCicloMaximo
+            ? "CYCLE_COOLING_MAX" : "CYCLE_COOLING_MIN";
+      }
       if (modoTermico == MODO_CALENTAR) return "HEATING";
       if (modoTermico == MODO_ENFRIAR) return "COOLING";
       return "HOLD";
@@ -468,7 +577,9 @@ void enviarEstado(unsigned long ahora) {
     Serial.print(",0.0,");
     Serial.print(tempMinima, 1);
     Serial.print(',');
-    Serial.println(tempMaxima, 1);
+    Serial.print(tempMaxima, 1);
+    Serial.print(',');
+    Serial.println(cicloActivo ? 1 : 0);
     return;
   }
 
@@ -491,7 +602,9 @@ void enviarEstado(unsigned long ahora) {
   Serial.print(',');
   Serial.print(tempMinima, 1);
   Serial.print(',');
-  Serial.println(tempMaxima, 1);
+  Serial.print(tempMaxima, 1);
+  Serial.print(',');
+  Serial.println(cicloActivo ? 1 : 0);
 }
 
 void setup() {

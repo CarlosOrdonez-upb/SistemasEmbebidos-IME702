@@ -5,6 +5,7 @@ from serial.tools import list_ports
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton, 
                              QComboBox, QDialog,
+                             QMessageBox,
                              QGraphicsView, QGraphicsScene, QGraphicsRectItem, 
                              QGraphicsEllipseItem, QGraphicsTextItem,
                              QGraphicsItemGroup, QGraphicsPolygonItem,
@@ -22,7 +23,6 @@ class SimulacionCuarto(QMainWindow):
         self.arduino = None
         self.sensor_valido = False
         self.purga_soportada = False
-        self.purga_soportada = False
         self.buffer_serial = bytearray()
         self.modo_termico = "MANTENIENDO"
         self.fase_particulas = 0
@@ -30,6 +30,8 @@ class SimulacionCuarto(QMainWindow):
         self.ventiladores_activos = False
         self.puertas_abiertas = False
         self.prueba_conexion_activa = False
+        self.ciclo_activo = False
+        self.ciclo_soportado = False
         self.temperatura_actual = None
         self.dialogo_purga = None
         self.lbl_detalle_purga = None
@@ -150,6 +152,16 @@ class SimulacionCuarto(QMainWindow):
         self.boton_purga = QPushButton("Purga de aire")
         self.boton_purga.setEnabled(False)
         self.boton_purga.clicked.connect(self.solicitar_purga_manual)
+        self.boton_iniciar_ciclo = QPushButton("Iniciar ciclo térmico")
+        self.boton_iniciar_ciclo.setEnabled(False)
+        self.boton_iniciar_ciclo.clicked.connect(self.solicitar_inicio_ciclo)
+        self.boton_detener_ciclo = QPushButton("Detener todo")
+        self.boton_detener_ciclo.setObjectName("secundario")
+        self.boton_detener_ciclo.setEnabled(False)
+        self.boton_detener_ciclo.clicked.connect(self.detener_ciclo)
+        ciclo_layout = QHBoxLayout()
+        ciclo_layout.addWidget(self.boton_iniciar_ciclo)
+        ciclo_layout.addWidget(self.boton_detener_ciclo)
         
         self.lbl_rango = QLabel("RANGO DE TEMPERATURA")
         self.lbl_temp_minima = QLabel("Temperatura mínima")
@@ -196,6 +208,7 @@ class SimulacionCuarto(QMainWindow):
         control_layout.addWidget(self.boton_actualizar_puertos)
         control_layout.addWidget(self.boton_prueba_conexion)
         control_layout.addWidget(self.boton_purga)
+        control_layout.addLayout(ciclo_layout)
         control_layout.addSpacing(8)
         control_layout.addWidget(self.lbl_rango)
         control_layout.addLayout(rango_layout)
@@ -566,6 +579,8 @@ class SimulacionCuarto(QMainWindow):
 
     def conectar_serial(self):
         if self.arduino and self.arduino.is_open:
+            if self.ciclo_soportado and not self.enviar_comando_detener():
+                return
             self.cancelar_cuenta_regresiva_purga()
             if self.prueba_conexion_activa:
                 self.enviar_modo_prueba(False)
@@ -573,11 +588,13 @@ class SimulacionCuarto(QMainWindow):
             self.arduino = None
             self.sensor_valido = False
             self.purga_soportada = False
-            self.purga_soportada = False
+            self.ciclo_soportado = False
+            self.ciclo_activo = False
             self.boton_conexion.setText("Conectar")
             self.combo_puertos.setEnabled(True)
             self.boton_prueba_conexion.setEnabled(False)
             self.boton_purga.setEnabled(False)
+            self.actualizar_botones_ciclo()
             self.lbl_estado.setText("Estado: Desconectado")
             return
 
@@ -598,7 +615,9 @@ class SimulacionCuarto(QMainWindow):
             self.boton_purga.setEnabled(False)
             self.lbl_estado.setText(f"Estado: Conectado a {puerto}; esperando datos")
             self.purga_soportada = False
-            self.purga_soportada = False
+            self.ciclo_soportado = False
+            self.ciclo_activo = False
+            self.actualizar_botones_ciclo()
         except (serial.SerialException, OSError) as error:
             self.arduino = None
             self.lbl_estado.setText(f"Estado: No se pudo abrir {puerto}: {error}")
@@ -621,11 +640,13 @@ class SimulacionCuarto(QMainWindow):
                 self.arduino = None
                 self.sensor_valido = False
                 self.purga_soportada = False
-                self.purga_soportada = False
+                self.ciclo_soportado = False
+                self.ciclo_activo = False
                 self.boton_conexion.setText("Conectar")
                 self.combo_puertos.setEnabled(True)
                 self.boton_prueba_conexion.setEnabled(False)
                 self.boton_purga.setEnabled(False)
+                self.actualizar_botones_ciclo()
                 self.prueba_conexion_activa = False
                 self.actualizar_boton_prueba()
 
@@ -658,12 +679,36 @@ class SimulacionCuarto(QMainWindow):
                 self.boton_iniciar_purga.setEnabled(True)
             return
 
+        if len(partes) >= 3 and partes[0] == "ACK" and partes[1] == "CYCLE":
+            self.ciclo_activo = True
+            self.actualizar_boton_prueba()
+            self.actualizar_botones_ciclo()
+            self.lbl_estado.setText("Estado: Ciclo térmico iniciado")
+            return
+        if len(partes) >= 3 and partes[0] == "ERR" and partes[1] == "CYCLE":
+            self.lbl_estado.setText(
+                f"Estado: No se pudo iniciar el ciclo ({partes[2]})"
+            )
+            return
+        if len(partes) >= 3 and partes[0] == "ERR" and partes[1] == "TEST":
+            self.lbl_estado.setText(
+                f"Estado: No se pudo iniciar la prueba ({partes[2]})"
+            )
+            return
+        if len(partes) >= 2 and partes[0] == "ACK" and partes[1] == "STOP":
+            self.ciclo_activo = False
+            self.actualizar_boton_prueba()
+            self.actualizar_botones_ciclo()
+            self.lbl_estado.setText("Estado: Ciclo detenido; salidas apagadas")
+            return
+
         if len(partes) >= 2 and partes[0] == "STATUS" and partes[1] == "ERROR":
             self.cancelar_cuenta_regresiva_purga()
             self.sensor_valido = False
-            self.purga_soportada = len(partes) == 10
-            self.purga_soportada = len(partes) == 10
-            if len(partes) == 10:
+            self.purga_soportada = len(partes) in (10, 11)
+            self.ciclo_soportado = len(partes) == 11
+            self.ciclo_activo = len(partes) == 11 and partes[10] == "1"
+            if len(partes) in (10, 11):
                 try:
                     temp_minima = float(partes[8])
                     temp_maxima = float(partes[9])
@@ -695,29 +740,32 @@ class SimulacionCuarto(QMainWindow):
             self.modo_termico = (
                 "PRUEBA" if self.prueba_conexion_activa else "ERROR"
             )
-            self.actualizar_boton_prueba()
             self.boton_purga.setEnabled(False)
             self.lbl_estado.setText(
                 "Estado: Prueba activa; error del sensor"
                 if self.prueba_conexion_activa else
                 "Estado: Error del sensor; salidas apagadas"
             )
+            self.actualizar_boton_prueba()
+            self.actualizar_botones_ciclo()
             return
 
-        if not partes or partes[0] != "STATUS" or len(partes) not in (4, 9, 10):
+        if not partes or partes[0] != "STATUS" or len(partes) not in (
+            4, 9, 10, 11
+        ):
             return
 
         try:
             temp = float(partes[1])
             foco_on = partes[2] == "1"
             peltier_on = partes[3] == "1"
-            if len(partes) in (9, 10):
+            if len(partes) in (9, 10, 11):
                 self.ventiladores_activos = partes[4] == "1"
                 self.puertas_abiertas = partes[5] == "1"
                 fase = partes[6]
                 humedad = float(partes[7])
                 self.prueba_conexion_activa = fase == "TESTING"
-                if len(partes) == 10:
+                if len(partes) in (10, 11):
                     temp_minima = float(partes[8])
                     temp_maxima = float(partes[9])
                     if (
@@ -740,9 +788,9 @@ class SimulacionCuarto(QMainWindow):
         except ValueError:
             return
         self.sensor_valido = True
-        self.purga_soportada = len(partes) == 10
-        self.purga_soportada = len(partes) == 10
-        self.actualizar_boton_prueba()
+        self.purga_soportada = len(partes) in (10, 11)
+        self.ciclo_soportado = len(partes) == 11
+        self.ciclo_activo = len(partes) == 11 and partes[10] == "1"
         if temp_minima is None or temp_maxima is None:
             self.lbl_rango_actual.setText(
                 "Rango: no disponible (firmware anterior)"
@@ -764,6 +812,11 @@ class SimulacionCuarto(QMainWindow):
             "HEATING": ("CALENTANDO", "Calentando"),
             "COOLING": ("ENFRIANDO", "Enfriando"),
             "HOLD": ("MANTENIENDO", "Manteniendo"),
+            "CYCLE_HEATING_MIN": ("CALENTANDO", "Ciclo: calentando hasta la mínima"),
+            "CYCLE_HEATING_MAX": ("CALENTANDO", "Ciclo: calentando hasta la máxima"),
+            "CYCLE_COOLING_MIN": ("ENFRIANDO", "Ciclo: enfriando hasta la mínima"),
+            "CYCLE_COOLING_MAX": ("ENFRIANDO", "Ciclo: enfriando hasta la máxima"),
+            "STOPPED": ("MANTENIENDO", "Ciclo detenido; salidas apagadas"),
             "PURGE_OPENING": ("PURGA", "Abriendo tapas"),
             "PURGE_RUNNING": ("PURGA", "Extrayendo aire"),
             "PURGE_CLOSING": ("PURGA", "Cerrando tapas"),
@@ -781,11 +834,12 @@ class SimulacionCuarto(QMainWindow):
         elif fase == "SENSOR_ERROR":
             self.modo_termico = "ERROR"
         self.lbl_estado.setText(f"Estado: {texto_estado}")
+        self.actualizar_boton_prueba()
+        self.actualizar_botones_ciclo()
         self.boton_purga.setEnabled(
             self.arduino is not None
             and self.arduino.is_open
             and self.sensor_valido
-            and self.purga_soportada
             and self.purga_soportada
             and not self.prueba_conexion_activa
             and not fase.startswith("PURGE_")
@@ -823,6 +877,93 @@ class SimulacionCuarto(QMainWindow):
             self.spin_temp_minima.setValue(max(valor - 0.5, 20.0))
             self.spin_temp_minima.blockSignals(anterior)
         self.enviar_rango_temperatura()
+
+    def actualizar_botones_ciclo(self):
+        conectado = self.arduino is not None and self.arduino.is_open
+        self.boton_iniciar_ciclo.setEnabled(
+            conectado
+            and self.sensor_valido
+            and self.ciclo_soportado
+            and not self.ciclo_activo
+            and not self.prueba_conexion_activa
+            and self.modo_termico != "PURGA"
+        )
+        self.boton_detener_ciclo.setEnabled(conectado and self.ciclo_activo)
+        self.spin_temp_minima.setEnabled(not self.ciclo_activo)
+        self.spin_temp_maxima.setEnabled(not self.ciclo_activo)
+
+    def solicitar_inicio_ciclo(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText("Estado: Conecta el ESP32 para iniciar el ciclo")
+            return
+        if not self.sensor_valido or not self.ciclo_soportado:
+            self.lbl_estado.setText(
+                "Estado: Esperando sensor y firmware compatible con ciclos"
+            )
+            return
+
+        dialogo = QMessageBox(self)
+        dialogo.setWindowTitle("Iniciar ciclo térmico")
+        dialogo.setText("¿A qué temperatura debe llegar primero?")
+        boton_minima = dialogo.addButton(
+            "Temperatura mínima", QMessageBox.AcceptRole
+        )
+        boton_maxima = dialogo.addButton(
+            "Temperatura máxima", QMessageBox.AcceptRole
+        )
+        dialogo.addButton("Cancelar", QMessageBox.RejectRole)
+        dialogo.exec_()
+        boton_elegido = dialogo.clickedButton()
+        if boton_elegido not in (boton_minima, boton_maxima):
+            return
+
+        primero = "MIN" if boton_elegido is boton_minima else "MAX"
+        temp_minima = self.spin_temp_minima.value()
+        temp_maxima = self.spin_temp_maxima.value()
+        if self.temperatura_actual is not None:
+            if self.temperatura_actual < temp_minima:
+                QMessageBox.warning(
+                    self,
+                    "Temperatura por debajo del rango",
+                    f"La caja está a {self.temperatura_actual:.1f} °C, por "
+                    f"debajo de la mínima ({temp_minima:.1f} °C). Primero "
+                    f"alcanzará la temperatura {'mínima' if primero == 'MIN' else 'máxima'} "
+                    "elegida; después alternará entre ambos límites.",
+                )
+            elif self.temperatura_actual > temp_maxima:
+                QMessageBox.warning(
+                    self,
+                    "Temperatura por encima del rango",
+                    f"La caja está a {self.temperatura_actual:.1f} °C, por "
+                    f"encima de la máxima ({temp_maxima:.1f} °C). Primero "
+                    f"alcanzará la temperatura {'mínima' if primero == 'MIN' else 'máxima'} "
+                    "elegida; después alternará entre ambos límites.",
+                )
+
+        if not self.enviar_rango_temperatura():
+            return
+        try:
+            self.arduino.write(f"CYCLE,{primero}\n".encode("utf-8"))
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo iniciar el ciclo: {error}"
+            )
+
+    def detener_ciclo(self):
+        self.enviar_comando_detener()
+
+    def enviar_comando_detener(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText("Estado: Conecta el ESP32 para detener el ciclo")
+            return False
+        try:
+            self.arduino.write(b"STOP\n")
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo detener el ciclo: {error}"
+            )
+            return False
+        return True
 
     def solicitar_purga_manual(self):
         if not self.arduino or not self.arduino.is_open:
@@ -922,16 +1063,19 @@ class SimulacionCuarto(QMainWindow):
         self.boton_cancelar_purga = None
 
     def enviar_rango_temperatura(self):
-        if self.arduino and self.arduino.is_open:
-            temp_minima = self.spin_temp_minima.value()
-            temp_maxima = self.spin_temp_maxima.value()
-            comando = f"SETRANGE,{temp_minima:.1f},{temp_maxima:.1f}\n"
-            try:
-                self.arduino.write(comando.encode("utf-8"))
-            except (serial.SerialException, OSError) as error:
-                self.lbl_estado.setText(
-                    f"Estado: No se pudo enviar el rango: {error}"
-                )
+        if not self.arduino or not self.arduino.is_open:
+            return False
+        temp_minima = self.spin_temp_minima.value()
+        temp_maxima = self.spin_temp_maxima.value()
+        comando = f"SETRANGE,{temp_minima:.1f},{temp_maxima:.1f}\n"
+        try:
+            self.arduino.write(comando.encode("utf-8"))
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo enviar el rango: {error}"
+            )
+            return False
+        return True
 
     def alternar_prueba_conexion(self):
         self.enviar_modo_prueba(not self.prueba_conexion_activa)
@@ -961,10 +1105,21 @@ class SimulacionCuarto(QMainWindow):
             if self.prueba_conexion_activa else
             "Iniciar prueba de conexión"
         )
+        conectado = self.arduino is not None and self.arduino.is_open
+        self.boton_prueba_conexion.setEnabled(
+            conectado
+            and (
+                self.prueba_conexion_activa
+                or (not self.ciclo_activo and self.modo_termico != "PURGA")
+            )
+        )
 
     def closeEvent(self, event):
         self.cancelar_cuenta_regresiva_purga()
         if self.arduino and self.arduino.is_open:
+            if self.ciclo_soportado and not self.enviar_comando_detener():
+                event.ignore()
+                return
             if self.prueba_conexion_activa:
                 self.enviar_modo_prueba(False)
             self.arduino.close()
