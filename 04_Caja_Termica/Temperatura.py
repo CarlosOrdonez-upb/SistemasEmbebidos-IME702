@@ -4,7 +4,7 @@ import serial
 from serial.tools import list_ports
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton, 
-                             QComboBox,
+                             QComboBox, QDialog,
                              QGraphicsView, QGraphicsScene, QGraphicsRectItem, 
                              QGraphicsEllipseItem, QGraphicsTextItem,
                              QGraphicsItemGroup, QGraphicsPolygonItem,
@@ -20,6 +20,9 @@ class SimulacionCuarto(QMainWindow):
         self.resize(900, 600)
 
         self.arduino = None
+        self.sensor_valido = False
+        self.purga_soportada = False
+        self.purga_soportada = False
         self.buffer_serial = bytearray()
         self.modo_termico = "MANTENIENDO"
         self.fase_particulas = 0
@@ -28,6 +31,11 @@ class SimulacionCuarto(QMainWindow):
         self.puertas_abiertas = False
         self.prueba_conexion_activa = False
         self.temperatura_actual = None
+        self.dialogo_purga = None
+        self.lbl_detalle_purga = None
+        self.lbl_cuenta_purga = None
+        self.boton_iniciar_purga = None
+        self.boton_cancelar_purga = None
         self.color_ambiente = QColor(203, 209, 207)
         self.color_ambiente_objetivo = QColor(203, 209, 207)
 
@@ -139,25 +147,28 @@ class SimulacionCuarto(QMainWindow):
         )
         self.boton_prueba_conexion.setEnabled(False)
         self.boton_prueba_conexion.clicked.connect(self.alternar_prueba_conexion)
+        self.boton_purga = QPushButton("Purga de aire")
+        self.boton_purga.setEnabled(False)
+        self.boton_purga.clicked.connect(self.solicitar_purga_manual)
         
         self.lbl_rango = QLabel("RANGO DE TEMPERATURA")
         self.lbl_temp_minima = QLabel("Temperatura mínima")
         self.spin_temp_minima = QDoubleSpinBox()
-        self.spin_temp_minima.setRange(20.0, 45.0)
+        self.spin_temp_minima.setRange(20.0, 59.5)
         self.spin_temp_minima.setValue(28.0)
         self.spin_temp_minima.setSingleStep(0.5)
         self.spin_temp_minima.setSuffix(" °C")
-        self.spin_temp_minima.setToolTip("Rango permitido: 20–45 °C")
+        self.spin_temp_minima.setToolTip("Rango permitido: 20–59.5 °C")
         self.spin_temp_minima.valueChanged.connect(
             self.actualizar_temperatura_minima
         )
         self.lbl_temp_maxima = QLabel("Temperatura máxima")
         self.spin_temp_maxima = QDoubleSpinBox()
-        self.spin_temp_maxima.setRange(25.0, 50.0)
+        self.spin_temp_maxima.setRange(20.5, 60.0)
         self.spin_temp_maxima.setValue(35.0)
         self.spin_temp_maxima.setSingleStep(0.5)
         self.spin_temp_maxima.setSuffix(" °C")
-        self.spin_temp_maxima.setToolTip("Rango permitido: 25–50 °C")
+        self.spin_temp_maxima.setToolTip("Rango permitido: 20.5–60 °C")
         self.spin_temp_maxima.valueChanged.connect(
             self.actualizar_temperatura_maxima
         )
@@ -184,6 +195,7 @@ class SimulacionCuarto(QMainWindow):
         control_layout.addWidget(self.boton_conexion)
         control_layout.addWidget(self.boton_actualizar_puertos)
         control_layout.addWidget(self.boton_prueba_conexion)
+        control_layout.addWidget(self.boton_purga)
         control_layout.addSpacing(8)
         control_layout.addWidget(self.lbl_rango)
         control_layout.addLayout(rango_layout)
@@ -554,13 +566,18 @@ class SimulacionCuarto(QMainWindow):
 
     def conectar_serial(self):
         if self.arduino and self.arduino.is_open:
+            self.cancelar_cuenta_regresiva_purga()
             if self.prueba_conexion_activa:
                 self.enviar_modo_prueba(False)
             self.arduino.close()
             self.arduino = None
+            self.sensor_valido = False
+            self.purga_soportada = False
+            self.purga_soportada = False
             self.boton_conexion.setText("Conectar")
             self.combo_puertos.setEnabled(True)
             self.boton_prueba_conexion.setEnabled(False)
+            self.boton_purga.setEnabled(False)
             self.lbl_estado.setText("Estado: Desconectado")
             return
 
@@ -578,7 +595,10 @@ class SimulacionCuarto(QMainWindow):
             self.boton_conexion.setText("Desconectar")
             self.combo_puertos.setEnabled(False)
             self.boton_prueba_conexion.setEnabled(True)
+            self.boton_purga.setEnabled(False)
             self.lbl_estado.setText(f"Estado: Conectado a {puerto}; esperando datos")
+            self.purga_soportada = False
+            self.purga_soportada = False
         except (serial.SerialException, OSError) as error:
             self.arduino = None
             self.lbl_estado.setText(f"Estado: No se pudo abrir {puerto}: {error}")
@@ -596,17 +616,53 @@ class SimulacionCuarto(QMainWindow):
                     self.procesar_linea(linea.decode("utf-8", errors="replace").strip())
             except (serial.SerialException, OSError) as error:
                 self.lbl_estado.setText(f"Estado: Error de comunicación: {error}")
+                self.cancelar_cuenta_regresiva_purga()
                 self.arduino.close()
                 self.arduino = None
+                self.sensor_valido = False
+                self.purga_soportada = False
+                self.purga_soportada = False
                 self.boton_conexion.setText("Conectar")
                 self.combo_puertos.setEnabled(True)
                 self.boton_prueba_conexion.setEnabled(False)
+                self.boton_purga.setEnabled(False)
                 self.prueba_conexion_activa = False
                 self.actualizar_boton_prueba()
 
     def procesar_linea(self, linea):
         partes = linea.split(",")
+        if len(partes) >= 3 and partes[0] == "WARN" and partes[1] == "DEWPOINT":
+            if partes[2] == "RISK" and len(partes) == 5:
+                try:
+                    punto_rocio = float(partes[3])
+                    temp_minima = float(partes[4])
+                except ValueError:
+                    return
+                if math.isfinite(punto_rocio) and math.isfinite(temp_minima):
+                    self.mostrar_alerta_purga(punto_rocio, temp_minima)
+            return
+        if len(partes) >= 3 and partes[0] == "ACK" and partes[1] == "PURGE":
+            self.lbl_estado.setText("Estado: Purga de aire iniciada")
+            if self.lbl_cuenta_purga is not None:
+                self.lbl_cuenta_purga.setText(
+                    "Purga iniciada; extracción durante 20 segundos."
+                )
+            if self.boton_iniciar_purga is not None:
+                self.boton_iniciar_purga.setEnabled(False)
+            return
+        if len(partes) >= 3 and partes[0] == "ERR" and partes[1] == "PURGE":
+            self.lbl_estado.setText(
+                f"Estado: No se pudo iniciar la purga ({partes[2]})"
+            )
+            if self.boton_iniciar_purga is not None:
+                self.boton_iniciar_purga.setEnabled(True)
+            return
+
         if len(partes) >= 2 and partes[0] == "STATUS" and partes[1] == "ERROR":
+            self.cancelar_cuenta_regresiva_purga()
+            self.sensor_valido = False
+            self.purga_soportada = len(partes) == 10
+            self.purga_soportada = len(partes) == 10
             if len(partes) == 10:
                 try:
                     temp_minima = float(partes[8])
@@ -640,6 +696,7 @@ class SimulacionCuarto(QMainWindow):
                 "PRUEBA" if self.prueba_conexion_activa else "ERROR"
             )
             self.actualizar_boton_prueba()
+            self.boton_purga.setEnabled(False)
             self.lbl_estado.setText(
                 "Estado: Prueba activa; error del sensor"
                 if self.prueba_conexion_activa else
@@ -682,6 +739,9 @@ class SimulacionCuarto(QMainWindow):
                 self.prueba_conexion_activa = False
         except ValueError:
             return
+        self.sensor_valido = True
+        self.purga_soportada = len(partes) == 10
+        self.purga_soportada = len(partes) == 10
         self.actualizar_boton_prueba()
         if temp_minima is None or temp_maxima is None:
             self.lbl_rango_actual.setText(
@@ -706,7 +766,6 @@ class SimulacionCuarto(QMainWindow):
             "HOLD": ("MANTENIENDO", "Manteniendo"),
             "PURGE_OPENING": ("PURGA", "Abriendo tapas"),
             "PURGE_RUNNING": ("PURGA", "Extrayendo aire"),
-            "PURGE_WAIT": ("PURGA", "Estabilizando con tapas abiertas"),
             "PURGE_CLOSING": ("PURGA", "Cerrando tapas"),
             "TESTING": ("PRUEBA", "Prueba: compuertas abiertas y ventiladores activos"),
             "SENSOR_ERROR": ("ERROR", "Error del sensor"),
@@ -722,6 +781,15 @@ class SimulacionCuarto(QMainWindow):
         elif fase == "SENSOR_ERROR":
             self.modo_termico = "ERROR"
         self.lbl_estado.setText(f"Estado: {texto_estado}")
+        self.boton_purga.setEnabled(
+            self.arduino is not None
+            and self.arduino.is_open
+            and self.sensor_valido
+            and self.purga_soportada
+            and self.purga_soportada
+            and not self.prueba_conexion_activa
+            and not fase.startswith("PURGE_")
+        )
         self.foco.setBrush(
             QBrush(QColor(255, 220, 107) if foco_on else QColor(50, 61, 69))
         )
@@ -745,16 +813,113 @@ class SimulacionCuarto(QMainWindow):
     def actualizar_temperatura_minima(self, valor):
         if valor >= self.spin_temp_maxima.value():
             anterior = self.spin_temp_maxima.blockSignals(True)
-            self.spin_temp_maxima.setValue(valor + 0.5)
+            self.spin_temp_maxima.setValue(min(valor + 0.5, 60.0))
             self.spin_temp_maxima.blockSignals(anterior)
         self.enviar_rango_temperatura()
 
     def actualizar_temperatura_maxima(self, valor):
         if valor <= self.spin_temp_minima.value():
             anterior = self.spin_temp_minima.blockSignals(True)
-            self.spin_temp_minima.setValue(valor - 0.5)
+            self.spin_temp_minima.setValue(max(valor - 0.5, 20.0))
             self.spin_temp_minima.blockSignals(anterior)
         self.enviar_rango_temperatura()
+
+    def solicitar_purga_manual(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText("Estado: Conecta el ESP32 para solicitar la purga")
+            return
+        self.mostrar_alerta_purga()
+
+    def mostrar_alerta_purga(self, punto_rocio=None, temp_minima=None):
+        if self.dialogo_purga is None:
+            dialogo = QDialog(self)
+            dialogo.setWindowTitle("Recomendación de purga")
+            dialogo.setModal(False)
+            layout = QVBoxLayout(dialogo)
+
+            mensaje = QLabel("Se recomienda purga del aire")
+            mensaje.setWordWrap(True)
+            dialogo.lbl_mensaje_purga = mensaje
+            layout.addWidget(mensaje)
+
+            detalle = QLabel()
+            detalle.setWordWrap(True)
+            self.lbl_detalle_purga = detalle
+            layout.addWidget(detalle)
+
+            cuenta = QLabel(
+                "Al iniciar, la purga comienza de inmediato y la extracción "
+                "dura 20 segundos."
+            )
+            self.lbl_cuenta_purga = cuenta
+            layout.addWidget(cuenta)
+
+            botones = QHBoxLayout()
+            iniciar = QPushButton("Iniciar purga")
+            iniciar.clicked.connect(self.iniciar_purga_manual)
+            self.boton_iniciar_purga = iniciar
+            botones.addWidget(iniciar)
+            cancelar = QPushButton("Cerrar")
+            cancelar.clicked.connect(self.cancelar_cuenta_regresiva_purga)
+            self.boton_cancelar_purga = cancelar
+            botones.addWidget(cancelar)
+            layout.addLayout(botones)
+            dialogo.finished.connect(self.al_cerrar_dialogo_purga)
+            self.dialogo_purga = dialogo
+
+        assert self.dialogo_purga is not None
+        assert self.lbl_detalle_purga is not None
+        if punto_rocio is None or temp_minima is None:
+            self.lbl_detalle_purga.setText(
+                "La recomendación es manual; la purga solo inicia al pulsar "
+                "“Iniciar purga”."
+            )
+        else:
+            self.lbl_detalle_purga.setText(
+                f"Punto de rocío: {punto_rocio:.1f} °C; temperatura mínima "
+                f"configurada: {temp_minima:.1f} °C."
+            )
+        self.dialogo_purga.show()
+        self.dialogo_purga.raise_()
+        self.dialogo_purga.activateWindow()
+
+    def iniciar_purga_manual(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText("Estado: Conecta el ESP32 para solicitar la purga")
+            self.cancelar_cuenta_regresiva_purga()
+            return
+
+        assert self.boton_iniciar_purga is not None
+        assert self.lbl_cuenta_purga is not None
+        if self.enviar_comando_purga():
+            self.boton_iniciar_purga.setEnabled(False)
+            self.lbl_cuenta_purga.setText(
+                "Solicitud enviada; la extracción durará 20 segundos."
+            )
+
+    def enviar_comando_purga(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText("Estado: Conecta el ESP32 para solicitar la purga")
+            return False
+        try:
+            self.arduino.write(b"PURGE\n")
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo solicitar la purga: {error}"
+            )
+            return False
+        return True
+
+    def cancelar_cuenta_regresiva_purga(self):
+        if self.dialogo_purga is not None:
+            self.dialogo_purga.close()
+
+    def al_cerrar_dialogo_purga(self):
+        self.dialogo_purga = None
+        self.lbl_detalle_purga = None
+        self.lbl_cuenta_purga = None
+        self.boton_iniciar_purga = None
+        self.boton_cancelar_purga = None
 
     def enviar_rango_temperatura(self):
         if self.arduino and self.arduino.is_open:
@@ -798,6 +963,7 @@ class SimulacionCuarto(QMainWindow):
         )
 
     def closeEvent(self, event):
+        self.cancelar_cuenta_regresiva_purga()
         if self.arduino and self.arduino.is_open:
             if self.prueba_conexion_activa:
                 self.enviar_modo_prueba(False)

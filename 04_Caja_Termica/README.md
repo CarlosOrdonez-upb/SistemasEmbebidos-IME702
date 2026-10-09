@@ -2,7 +2,7 @@
 # 🌡️ Proyecto 04: Caja Térmica Inteligente con Sistema de Purga
 
 ## 📋 Objetivo
-Diseñar e implementar una cámara térmica controlada por un microcontrolador ESP32, capaz de mantener una temperatura dentro de un rango mediante un sistema de calefacción (foco) y refrigeración (módulo Peltier). El sistema incluye una purga condicional al cambiar el rango y detectar que la temperatura está a más de 2 °C de sus límites.
+Diseñar e implementar una cámara térmica controlada por un microcontrolador ESP32, capaz de mantener una temperatura dentro de un rango configurable de 20 a 60 °C mediante un sistema de calefacción (foco) y refrigeración (módulo Peltier). La purga se solicita manualmente desde la interfaz.
 
 ---
 
@@ -11,14 +11,14 @@ Diseñar e implementar una cámara térmica controlada por un microcontrolador E
 El firmware implementa un control robusto basado en tres pilares fundamentales:
 
 1. **Control por rango:**
-   Activa el foco bajo el límite mínimo, la celda Peltier sobre el máximo y mantiene ambas salidas apagadas dentro del rango.
-2. **Purga condicional:**
-   Solo al cambiar el rango y si la temperatura está fuera del nuevo rango por más de 2 °C, el sistema entra en **Fase de Purga**:
+   Calienta desde el límite mínimo hasta alcanzar el máximo y luego enfría hasta alcanzar de nuevo el mínimo, manteniendo la dirección térmica dentro del rango.
+2. **Purga manual y riesgo de condensación:**
+   La interfaz recomienda purgar cuando el punto de rocío calculado alcanza o supera la temperatura mínima configurada. La recomendación no activa la purga: al pulsar **Iniciar purga**, comienza de inmediato la secuencia manual y los ventiladores extraen aire durante 20 segundos. También hay un botón para solicitarla manualmente:
    - Abre las tapas superiores mediante servomotores (SG90).
    - Activa los ventiladores de extracción para renovar el aire estancado.
-   - Cierra las tapas y reanuda el control térmico normal una vez estabilizado.
+   - Cierra las tapas al terminar los 20 segundos de extracción y reanuda el control térmico.
 3. **Protecciones de seguridad:**
-   Una lectura del DHT11 menor de 10 °C o mayor de 60 °C, o un error del sensor, apaga foco, Peltier y ventiladores, cierra las tapas y reporta `STATUS,ERROR`. Se reanuda automáticamente cuando vuelve una lectura válida. Una humedad superior al 90 % genera `WARN,HUMIDITY,CONDENSATION_RISK`.
+   Una lectura del DHT11 menor de 10 °C o mayor de 60 °C, o un error del sensor, apaga foco, Peltier y ventiladores, cierra las tapas y reporta `STATUS,ERROR`. Se reanuda automáticamente cuando vuelve una lectura válida. El riesgo de condensación se estima con el punto de rocío y la temperatura mínima configurada, usada como aproximación de la superficie fría porque no hay un sensor de superficie.
    El foco tiene un máximo de 10 minutos continuos seguido de 1 minuto de descanso; la Peltier tiene un máximo de 15 minutos seguido de 2 minutos de descanso. Si se pierden comandos seriales durante 30 segundos, se conserva el rango configurado y el control térmico autónomo sigue funcionando.
    Los mensajes detallados de cambios de fase, decisiones de control y protecciones se habilitan compilando con `DEBUG_MODE` definido.
 
@@ -47,6 +47,7 @@ Se desarrolló una aplicación de escritorio en Python utilizando **PyQt5** que 
 - **Visualización en Tiempo Real:** Representación gráfica de la caja, con animación de los ventiladores girando y las tapas abriéndose/cerrándose suavemente.
 - **Partículas de Flujo:** Animación de partículas que simulan el flujo de aire caliente (rojo) o frío (azul) dependiendo del modo térmico.
 - **Cambio de Ambiente:** El color de fondo de la cámara cambia gradualmente (gradiente) reflejando la temperatura actual.
+- **Aviso de condensación y purga manual:** Muestra la recomendación cuando el punto de rocío alcanza la temperatura mínima configurada; al confirmar, los ventiladores comienzan la extracción y funcionan durante 20 segundos.
 - **Comunicación Serial:** Se conecta automáticamente al puerto COM del ESP32 (115200 baudios) para enviar el `SETRANGE` y recibir el `STATUS` cada 500ms.
 
 ##  Ver simulación
@@ -62,9 +63,12 @@ La interfaz y el ESP32 se comunican mediante texto plano estructurado:
 
 | Dirección | Comando / Formato | Descripción |
 | :--- | :--- | :--- |
-| **PC → ESP32** | `SETRANGE,28.0,35.0` | Establece los límites de temperatura (ambos entre 20.0 y 50.0 °C, con mínimo menor que máximo). |
+| **PC → ESP32** | `SETRANGE,28.0,35.0` | Establece los límites de temperatura (ambos entre 20.0 y 60.0 °C, con mínimo menor que máximo). |
+| **PC → ESP32** | `PURGE` | Solicita manualmente una purga; el firmware la inicia si el sensor está válido y no hay otra operación activa. |
 | **ESP32 → PC** | `STATUS,temp,foco,peltier,fans,tapas,FASE,humedad,tempMin,tempMax` | Paquete de telemetría completo con el rango configurado. |
 | **ESP32 → PC** | `STATUS,ERROR,0,0,0,0,SENSOR_ERROR,0.0,28.0,35.0` | Alerta crítica por fallo de sensor, incluyendo el rango configurado. |
+| **ESP32 → PC** | `WARN,DEWPOINT,RISK,puntoRocio,tempMin` | Riesgo estimado de condensación; la interfaz presenta la recomendación sin activar la purga. |
+| **ESP32 → PC** | `WARN,DEWPOINT,CLEAR` | El punto de rocío volvió a estar por debajo de la temperatura mínima configurada. |
 
 ---
 
@@ -95,7 +99,8 @@ $$
 V = 0.30^3 = 0.027\ \mathrm{m^3} = 27\ \mathrm{L}.
 $$
 
-El control configurado opera entre $28$ y $35\ ^\circ\mathrm{C}$. Los
+El control inicial opera entre $28$ y $35\ ^\circ\mathrm{C}$ y puede
+configurarse entre $20$ y $60\ ^\circ\mathrm{C}$. Los
 ventiladores interiores mezclan el aire; durante la purga, las tapas accionadas
 por servos permiten la salida de aire y su reemplazo por aire del entorno.
 Para renovar aire hace falta una trayectoria de entrada y otra de salida: la
@@ -164,7 +169,11 @@ interior por debajo de aproximadamente $33.1\ ^\circ\mathrm{C}$ puede
 condensar agua. En el rango del proyecto, una superficie a $28\ ^\circ\mathrm{C}$
 presenta riesgo bajo esas condiciones, aunque el aire esté dentro del rango
 térmico previsto. El punto de rocío depende de la temperatura y humedad del
-aire; la condensación ocurre cuando $T_{superficie}<T_{rocío}$.
+aire; la condensación ocurre cuando $T_{superficie}\leq T_{rocío}$. Como no
+hay un sensor de superficie instalado, el firmware aproxima la superficie fría
+con la temperatura mínima configurada y avisa cuando
+$T_{rocío}\geq T_{mínima}$. Es una estimación, no una medición directa de
+condensación.
 
 #### B.3 Estimación de tasa de condensación
 
@@ -201,9 +210,9 @@ $h_m=0.005\ \mathrm{m/s}$, resulta
 $\dot m''\approx4.2\times10^{-5}\ \mathrm{kg\,m^{-2}\,s^{-1}}$, o
 $0.15\ \mathrm{kg\,m^{-2}\,h^{-1}}$. No es una predicción medida: cambiará
 con la circulación de aire, la rugosidad, el área y las temperaturas reales.
-La alarma de humedad del firmware (>90 % HR) es un aviso de riesgo, no un
-detector directo de condensación; para identificarla hay que comparar con la
-temperatura de superficies.
+El aviso del firmware compara el punto de rocío con la temperatura mínima
+configurada; para confirmar condensación real se requiere medir la temperatura
+de las superficies.
 
 ### C. Flujo de aire y número de Reynolds
 

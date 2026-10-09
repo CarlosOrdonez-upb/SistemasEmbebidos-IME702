@@ -19,18 +19,15 @@ const uint8_t PIN_SERVO_TAPA_2 = 23;
 
 const uint8_t SERVO_CERRADO = 0;
 const uint8_t SERVO_ABIERTO = 160;
-const float CAMBIO_PARA_PURGA = 2.0f;
 const float TEMPERATURA_CONFIG_MINIMA = 20.0f;
-const float TEMPERATURA_CONFIG_MAXIMA = 50.0f;
+const float TEMPERATURA_CONFIG_MAXIMA = 60.0f;
 const float TEMPERATURA_SENSOR_MINIMA = 10.0f;
 const float TEMPERATURA_SENSOR_MAXIMA = 60.0f;
-const float HUMEDAD_RIESGO_CONDENSACION = 90.0f;
 
 const unsigned long INTERVALO_SENSOR_MS = 2000;
 const unsigned long INTERVALO_ESTADO_MS = 500;
 const unsigned long ESPERA_APERTURA_MS = 1250;
-const unsigned long TIEMPO_VENTILACION_MS = 10000;
-const unsigned long ESPERA_CIERRE_MS = 10000;
+const unsigned long TIEMPO_VENTILACION_MS = 20000;
 const unsigned long TIEMPO_SERVO_MS = 400;
 const unsigned long TIMEOUT_COMUNICACION_MS = 30000;
 const unsigned long TIEMPO_MAXIMO_FOCO_MS = 10UL * 60UL * 1000UL;
@@ -42,7 +39,6 @@ enum Fase {
   NORMAL,
   PURGA_APERTURA,
   PURGA_VENTILACION,
-  PURGA_ESPERA,
   PURGA_CIERRE,
   ERROR_SENSOR
 };
@@ -66,7 +62,7 @@ float humedadActual = NAN;
 bool sensorValido = false;
 bool primeraLectura = true;
 bool modoPrueba = false;
-bool humedadAlta = false;
+bool riesgoPuntoRocio = false;
 bool timeoutComunicacionReportado = false;
 bool focoEnDescanso = false;
 bool peltierEnDescanso = false;
@@ -86,7 +82,6 @@ const char *nombreFaseBase(Fase valor) {
     case NORMAL: return "NORMAL";
     case PURGA_APERTURA: return "PURGA_APERTURA";
     case PURGA_VENTILACION: return "PURGA_VENTILACION";
-    case PURGA_ESPERA: return "PURGA_ESPERA";
     case PURGA_CIERRE: return "PURGA_CIERRE";
     case ERROR_SENSOR: return "ERROR_SENSOR";
   }
@@ -116,6 +111,35 @@ void cambiarModoTermico(ModoTermico nuevoModo) {
                 nombreModoTermico(modoTermico), nombreModoTermico(nuevoModo));
     modoTermico = nuevoModo;
   }
+}
+
+float calcularPuntoRocio(float temperatura, float humedad) {
+  if (!isfinite(temperatura) || !isfinite(humedad) ||
+      humedad <= 0.0f || humedad > 100.0f) {
+    return NAN;
+  }
+
+  float gamma = log(humedad / 100.0f) +
+                (17.67f * temperatura) / (243.5f + temperatura);
+  float denominador = 17.67f - gamma;
+  if (denominador <= 0.0f) {
+    return NAN;
+  }
+  return (243.5f * gamma) / denominador;
+}
+
+void actualizarRiesgoPuntoRocio(float temperatura, float humedad) {
+  float puntoRocio = calcularPuntoRocio(temperatura, humedad);
+  bool riesgoActual = isfinite(puntoRocio) && puntoRocio >= tempMinima;
+  if (riesgoActual && !riesgoPuntoRocio) {
+    Serial.print("WARN,DEWPOINT,RISK,");
+    Serial.print(puntoRocio, 1);
+    Serial.print(',');
+    Serial.println(tempMinima, 1);
+  } else if (!riesgoActual && riesgoPuntoRocio) {
+    Serial.println("WARN,DEWPOINT,CLEAR");
+  }
+  riesgoPuntoRocio = riesgoActual;
 }
 
 void limitarTiempoSalidas(bool &foco, bool &peltier, unsigned long ahora) {
@@ -216,6 +240,24 @@ void procesarComando(char *comando, unsigned long ahora) {
     return;
   }
 
+  if (strcmp(comando, "PURGE") == 0) {
+    if (!sensorValido) {
+      Serial.println("ERR,PURGE,SENSOR");
+      return;
+    }
+    if (modoPrueba) {
+      Serial.println("ERR,PURGE,TESTING");
+      return;
+    }
+    if (fase != NORMAL) {
+      Serial.println("ERR,PURGE,BUSY");
+      return;
+    }
+    iniciarPurga(ahora);
+    Serial.println("ACK,PURGE,STARTED");
+    return;
+  }
+
   if (strncmp(comando, "SETRANGE,", 9) != 0) {
     return;
   }
@@ -241,24 +283,12 @@ void procesarComando(char *comando, unsigned long ahora) {
     return;
   }
 
-  bool rangoCambio = nuevaMinima != tempMinima || nuevaMaxima != tempMaxima;
   tempMinima = nuevaMinima;
   tempMaxima = nuevaMaxima;
   Serial.print("ACK,SETRANGE,");
   Serial.print(tempMinima, 1);
   Serial.print(',');
   Serial.println(tempMaxima, 1);
-
-  float diferenciaLimite = 0.0f;
-  if (temperaturaActual < tempMinima) {
-    diferenciaLimite = tempMinima - temperaturaActual;
-  } else if (temperaturaActual > tempMaxima) {
-    diferenciaLimite = temperaturaActual - tempMaxima;
-  }
-  if (rangoCambio && diferenciaLimite > CAMBIO_PARA_PURGA &&
-      !modoPrueba && fase == NORMAL && sensorValido) {
-    iniciarPurga(ahora);
-  }
 }
 
 void leerComandos(unsigned long ahora) {
@@ -291,7 +321,14 @@ void actualizarSensor(unsigned long ahora) {
   float humedad = dht.readHumidity();
 
   if (isnan(temperatura) || isnan(humedad)) {
+    actualizarRiesgoPuntoRocio(NAN, NAN);
     sensorValido = false;
+    if (fase == PURGA_APERTURA || fase == PURGA_VENTILACION ||
+        fase == PURGA_CIERRE) {
+      cambiarModoTermico(MODO_MANTENER);
+      DEBUG_PRINT("DEBUG,SEGURIDAD,SENSOR_INVALIDO_DURANTE_PURGA\n");
+      return;
+    }
     modoPrueba = false;
     cambiarFase(ERROR_SENSOR);
     cambiarModoTermico(MODO_MANTENER);
@@ -301,18 +338,16 @@ void actualizarSensor(unsigned long ahora) {
     return;
   }
 
-  bool humedadAhoraAlta = humedad > HUMEDAD_RIESGO_CONDENSACION;
-  if (humedadAhoraAlta && !humedadAlta) {
-    Serial.println("WARN,HUMIDITY,CONDENSATION_RISK");
-    DEBUG_PRINT("DEBUG,SEGURIDAD,HUMEDAD_ALTA,%.1f\n", humedad);
-  } else if (!humedadAhoraAlta && humedadAlta) {
-    DEBUG_PRINT("DEBUG,SEGURIDAD,HUMEDAD_NORMAL,%.1f\n", humedad);
-  }
-  humedadAlta = humedadAhoraAlta;
-
   if (temperatura < TEMPERATURA_SENSOR_MINIMA ||
       temperatura > TEMPERATURA_SENSOR_MAXIMA) {
+    actualizarRiesgoPuntoRocio(NAN, NAN);
     sensorValido = false;
+    if (fase == PURGA_APERTURA || fase == PURGA_VENTILACION ||
+        fase == PURGA_CIERRE) {
+      cambiarModoTermico(MODO_MANTENER);
+      DEBUG_PRINT("DEBUG,SEGURIDAD,TEMPERATURA_INVALIDA_DURANTE_PURGA\n");
+      return;
+    }
     modoPrueba = false;
     cambiarFase(ERROR_SENSOR);
     cambiarModoTermico(MODO_MANTENER);
@@ -324,6 +359,7 @@ void actualizarSensor(unsigned long ahora) {
     return;
   }
 
+  actualizarRiesgoPuntoRocio(temperatura, humedad);
   temperaturaActual = temperatura;
   humedadActual = humedad;
   sensorValido = true;
@@ -343,12 +379,6 @@ void actualizarPurga(unsigned long ahora) {
     case PURGA_VENTILACION:
       if (ahora - inicioFaseMs >= TIEMPO_VENTILACION_MS) {
         escribirSalidas(false, false, false);
-        cambiarFase(PURGA_ESPERA);
-        inicioFaseMs = ahora;
-      }
-      break;
-    case PURGA_ESPERA:
-      if (ahora - inicioFaseMs >= ESPERA_CIERRE_MS) {
         servoTapa1.write(SERVO_CERRADO);
         servoTapa2.write(SERVO_CERRADO);
         cambiarFase(PURGA_CIERRE);
@@ -377,12 +407,12 @@ void actualizarControlTermico() {
     return;
   }
 
-  if (temperaturaActual < tempMinima) {
+  if (temperaturaActual <= tempMinima) {
     cambiarModoTermico(MODO_CALENTAR);
-  } else if (temperaturaActual > tempMaxima) {
+  } else if (temperaturaActual >= tempMaxima) {
     cambiarModoTermico(MODO_ENFRIAR);
-  } else {
-    cambiarModoTermico(MODO_MANTENER);
+  } else if (modoTermico == MODO_MANTENER) {
+    cambiarModoTermico(MODO_CALENTAR);
   }
 
   bool focoSolicitado = modoTermico == MODO_CALENTAR;
@@ -412,7 +442,6 @@ const char *nombreFase() {
   switch (fase) {
     case PURGA_APERTURA: return "PURGE_OPENING";
     case PURGA_VENTILACION: return "PURGE_RUNNING";
-    case PURGA_ESPERA: return "PURGE_WAIT";
     case PURGA_CIERRE: return "PURGE_CLOSING";
     case ERROR_SENSOR: return "SENSOR_ERROR";
     case NORMAL:
@@ -453,8 +482,7 @@ void enviarEstado(unsigned long ahora) {
   Serial.print(digitalRead(PIN_FANS));
   Serial.print(',');
   bool tapasAbiertas = modoPrueba || fase == PURGA_APERTURA ||
-                       fase == PURGA_VENTILACION || fase == PURGA_ESPERA ||
-                       fase == PURGA_CIERRE;
+                       fase == PURGA_VENTILACION || fase == PURGA_CIERRE;
   Serial.print(tapasAbiertas ? 1 : 0);
   Serial.print(',');
   Serial.print(nombreFase());
