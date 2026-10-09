@@ -13,7 +13,7 @@ El firmware implementa un control robusto basado en tres pilares fundamentales:
 1. **Ciclo térmico continuo:**
    Al pulsar **Iniciar ciclo térmico**, el usuario elige si quiere alcanzar primero la temperatura mínima o la máxima. El ESP32 llega a ese límite y alterna entre ambos hasta recibir **Detener todo**. Si la temperatura empieza fuera del rango, primero llega al límite elegido. Los límites no se pueden editar durante el ciclo.
 2. **Purga automática y manual:**
-   Durante cada tramo de enfriamiento, el ESP32 inicia una purga cuando la temperatura cae 2.5 °C por debajo del límite máximo. No se activa durante el calentamiento. La interfaz también recomienda purgar cuando el punto de rocío calculado alcanza o supera la temperatura mínima configurada; esta recomendación no activa la purga. El usuario puede solicitarla manualmente durante el ciclo: el control térmico se pausa mientras los ventiladores extraen aire durante 20 segundos y luego continúa hacia el mismo límite.
+   Al alcanzar el límite máximo durante el ciclo, el ESP32 inicia una purga antes de enfriar y no repite la purga 2.5 °C más abajo en ese tramo. Si el ciclo comienza enfriando, conserva la purga cuando la temperatura cae 2.5 °C por debajo del máximo. La interfaz también recomienda purgar cuando el punto de rocío calculado alcanza o supera la temperatura mínima configurada; esta recomendación no activa la purga. El usuario puede solicitarla manualmente durante el ciclo: el control térmico se pausa mientras los ventiladores extraen aire durante 20 segundos y luego continúa hacia el mismo límite.
    - Abre las tapas superiores mediante servomotores (SG90).
    - Activa los ventiladores de extracción para renovar el aire estancado.
    - Cierra las tapas al terminar los 20 segundos de extracción y reanuda el ciclo térmico.
@@ -48,7 +48,7 @@ Se desarrolló una aplicación de escritorio en Python utilizando **PyQt5** que 
 - **Partículas de Flujo:** Animación de partículas que simulan el flujo de aire caliente (rojo) o frío (azul) dependiendo del modo térmico.
 - **Cambio de Ambiente:** El color de fondo de la cámara cambia gradualmente (gradiente) reflejando la temperatura actual.
 - **Ciclo térmico:** Permite elegir el primer límite, muestra avisos si la temperatura está fuera del rango y ofrece **Detener todo**.
-- **Purga:** Se activa automáticamente al enfriar 2.5 °C desde la máxima y puede solicitarse manualmente; al concluir, el ciclo continúa.
+- **Purga:** Se activa automáticamente al alcanzar la máxima, antes de iniciar el enfriamiento, y puede solicitarse manualmente; al concluir, el ciclo continúa.
 - **Aviso de condensación:** Muestra una recomendación cuando el punto de rocío alcanza la temperatura mínima configurada; no inicia una purga por sí solo.
 - **Comunicación Serial:** Selecciona el puerto COM del ESP32 y pulsa **Conectar** (115200 baudios); la aplicación no se conecta ni inicia el control térmico automáticamente. Envía el `SETRANGE` al ajustar los límites y recibe el `STATUS` cada 500 ms. El firmware debe ser compatible con el protocolo de ciclo para habilitar los botones de inicio y detención.
 

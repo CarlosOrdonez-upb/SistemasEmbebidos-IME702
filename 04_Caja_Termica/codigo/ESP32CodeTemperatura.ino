@@ -494,9 +494,14 @@ void actualizarControlTermico() {
         ? temperaturaActual >= objetivo
         : temperaturaActual <= objetivo;
     if (objetivoAlcanzado) {
+      bool alcanzoMaxima = objetivoCicloMaximo;
       objetivoCicloMaximo = !objetivoCicloMaximo;
       modoCiclo = objetivoCicloMaximo ? MODO_CALENTAR : MODO_ENFRIAR;
-      purgaAutomaticaEnBajada = false;
+      purgaAutomaticaEnBajada = alcanzoMaxima;
+      if (alcanzoMaxima) {
+        iniciarPurga(millis());
+        return;
+      }
     }
 
     if (!objetivoCicloMaximo && modoCiclo == MODO_ENFRIAR &&
