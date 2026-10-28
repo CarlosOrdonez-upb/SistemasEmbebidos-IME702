@@ -1,0 +1,7 @@
+{
+  "idle_speed": 1200,
+  "action_speed": 120,
+  "autonomous": false,
+  "ai_movement": true,
+  "mute": false
+}
