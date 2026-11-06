@@ -10,7 +10,7 @@ Sistema ciberfísico que integra inteligencia artificial local, visión artifici
 - **Visión artificial eficiente:** detección de personas y contexto visual con YOLOv8n. El procesamiento se ejecuta en CPU para preservar la VRAM de la GPU destinada principalmente a los modelos de lenguaje y síntesis de voz.
 - **Control de hardware en tiempo real:** comunicación serie con ESP32 DevKit V1 para el movimiento coordinado de servomotores y la reproducción de audio mediante DFPlayer Mini.
 - **Interfaz gráfica de operación y respaldo:** controles manuales para servos, pistas de audio, movimientos automáticos y conexión serial.
-
+![Interfaz](InterfazAnimatronico.png)
 ## Arquitectura del proyecto
 
 - [`animatronico_control.py`](./animatronico_control.py): aplicación principal con interfaz gráfica, captura de audio, visión por computadora, interacción con IA, síntesis de voz y comunicación con el ESP32.
