@@ -20,12 +20,12 @@
 #include <ESP32Servo.h>
 #include <DFRobotDFPlayerMini.h>
 
-static constexpr uint32_t DFPLAYER_BAUD = 115200;
-static constexpr uint8_t PIN_NECK = 18;
-static constexpr uint8_t PIN_R_ARM = 19;
-static constexpr uint8_t PIN_L_ARM = 21;
-static constexpr uint8_t PIN_WAIST = 22;
-static constexpr uint8_t PIN_GLOBO = 23;
+static constexpr uint32_t DFPLAYER_BAUD = 9600;
+static constexpr uint8_t PIN_NECK = 13;
+static constexpr uint8_t PIN_R_ARM = 12;
+static constexpr uint8_t PIN_L_ARM = 14;
+static constexpr uint8_t PIN_WAIST = 27;
+static constexpr uint8_t PIN_GLOBO = 26;
 static constexpr uint8_t PIN_DF_TX = 17;
 static constexpr uint8_t PIN_DF_RX = 16;
 static constexpr uint32_t SERVO_TICK_MS = 20;

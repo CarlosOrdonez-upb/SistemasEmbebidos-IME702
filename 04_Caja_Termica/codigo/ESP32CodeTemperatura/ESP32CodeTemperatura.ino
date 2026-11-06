@@ -20,17 +20,15 @@
 #include <ESP32Servo.h>
 #include <DFRobotDFPlayerMini.h>
 
-static constexpr uint32_t DFPLAYER_BAUD = 115200;
-static constexpr uint8_t PIN_NECK = 18;
-static constexpr uint8_t PIN_R_ARM = 19;
-static constexpr uint8_t PIN_L_ARM = 21;
-static constexpr uint8_t PIN_WAIST = 22;
-static constexpr uint8_t PIN_GLOBO = 23;
+static constexpr uint32_t DFPLAYER_BAUD = 9600;
+static constexpr uint8_t PIN_NECK = 13;
+static constexpr uint8_t PIN_R_ARM = 12;
+static constexpr uint8_t PIN_L_ARM = 14;
+static constexpr uint8_t PIN_WAIST = 27;
+static constexpr uint8_t PIN_GLOBO = 26;
 static constexpr uint8_t PIN_DF_TX = 17;
 static constexpr uint8_t PIN_DF_RX = 16;
 static constexpr uint32_t SERVO_TICK_MS = 20;
-static constexpr int SERVO_MIN_PULSE_US = 500;
-static constexpr int SERVO_MAX_PULSE_US = 2500;
 static constexpr uint32_t GLOBO_POP_HOLD_MS = 500;
 
 struct ServoMotion {
@@ -58,7 +56,7 @@ static constexpr size_t SERVO_COUNT = sizeof(servos) / sizeof(servos[0]);
 HardwareSerial dfSerial(2);
 DFRobotDFPlayerMini player;
 bool playerReady = false;
-uint32_t activeMoveDurationMs = 350;
+uint32_t activeMoveDurationMs = 500;
 uint32_t lastServoTick = 0;
 bool popHolding = false;
 uint32_t popStartedAt = 0;
@@ -86,22 +84,12 @@ void moveServo(ServoMotion &motion, int angle, uint32_t durationMs) {
   motion.startAngle = motion.currentAngle;
   motion.targetAngle = static_cast<float>(angle);
   motion.startedAt = millis();
-  motion.durationMs = max(static_cast<uint32_t>(100), durationMs);
+  motion.durationMs = max(static_cast<uint32_t>(1), durationMs);
   motion.moving = true;
 }
 
 /**
- * Convert a fractional angle to a pulse, preserving sub-degree motion steps.
- */
-int angleToPulseUs(float angle) {
-  const float pulseRange =
-      static_cast<float>(SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US);
-  const float pulse = SERVO_MIN_PULSE_US + angle * pulseRange / 180.0f;
-  return static_cast<int>(pulse + 0.5f);
-}
-
-/**
- * Advance one servo with quintic easing for gentle starts and stops.
+ * Advance one servo interpolation step without waiting or delaying the loop.
  */
 void updateServo(ServoMotion &motion, uint32_t now) {
   if (!motion.moving) {
@@ -110,14 +98,9 @@ void updateServo(ServoMotion &motion, uint32_t now) {
   const uint32_t elapsed = now - motion.startedAt;
   const float progress = min(1.0f, static_cast<float>(elapsed) /
                                       static_cast<float>(motion.durationMs));
-  const float progressSquared = progress * progress;
-  const float progressCubed = progressSquared * progress;
-  const float easedProgress =
-      progressCubed * (progress * (progress * 6.0f - 15.0f) + 10.0f);
   motion.currentAngle =
-      motion.startAngle +
-      (motion.targetAngle - motion.startAngle) * easedProgress;
-  motion.servo.writeMicroseconds(angleToPulseUs(motion.currentAngle));
+      motion.startAngle + (motion.targetAngle - motion.startAngle) * progress;
+  motion.servo.write(static_cast<int>(motion.currentAngle + 0.5f));
   if (progress >= 1.0f) {
     motion.currentAngle = motion.targetAngle;
     motion.moving = false;
@@ -242,7 +225,7 @@ void updatePop(uint32_t now) {
 }
 
 /**
- * Configure serial ports and servos at their initial safe positions.
+ * Configure serial ports, PIR, and servos at their initial safe positions.
  */
 void setup() {
   Serial.begin(115200);
@@ -256,17 +239,16 @@ void setup() {
 
   for (size_t i = 0; i < SERVO_COUNT; ++i) {
     servos[i].servo.setPeriodHertz(50);
-    servos[i].servo.attach(servos[i].pin, SERVO_MIN_PULSE_US,
-                           SERVO_MAX_PULSE_US);
+    servos[i].servo.attach(servos[i].pin, 500, 2500);
     servos[i].currentAngle = (i == BODY_SERVO_COUNT) ? 0 : 90;
-    servos[i].servo.writeMicroseconds(angleToPulseUs(servos[i].currentAngle));
+    servos[i].servo.write(static_cast<int>(servos[i].currentAngle));
   }
   lastServoTick = millis();
   Serial.print("ESP32:READY\n");
 }
 
 /**
- * Read commands and update servo trajectories using millis(), never delay().
+ * Poll inputs and update servo trajectories using millis(), never delay().
  */
 void loop() {
   readCommands();

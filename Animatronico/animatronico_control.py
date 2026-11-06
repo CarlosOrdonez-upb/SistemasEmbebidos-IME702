@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import os
+
+os.environ["TORCH_CUDA_ARCH_LIST"] = "8.9"
+
 import queue
 import random
 import re
 import sys
 import threading
 import time
+import traceback
+import unicodedata
 import warnings
 from collections import deque
 from pathlib import Path
@@ -26,6 +31,8 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -45,6 +52,40 @@ from PyQt6.QtWidgets import (
 from TTS.api import TTS
 
 try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None
+
+VISION_MODEL_PATH = Path(__file__).with_name("yolov8n.pt")
+vision_model: Any | None = None
+if YOLO is None:
+    print(
+        "YOLO no está instalado. Instálalo con: pip install ultralytics",
+        file=sys.stderr,
+        flush=True,
+    )
+else:
+    try:
+        vision_model = YOLO(str(VISION_MODEL_PATH))
+        vision_model.to("cpu")
+        print(
+            f"YOLOv8n cargado en CPU desde {VISION_MODEL_PATH}; listo para detectar.",
+            flush=True,
+        )
+    except Exception as error:
+        print(
+            f"No se pudo cargar YOLOv8n desde {VISION_MODEL_PATH}: {error!r}",
+            file=sys.stderr,
+            flush=True,
+        )
+        traceback.print_exc()
+
+try:
     import serial
     from serial.tools import list_ports
 except ImportError:
@@ -53,6 +94,19 @@ except ImportError:
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+if DEVICE == "cuda":
+    capability = torch.cuda.get_device_capability(0)
+    supported_architectures = torch.cuda.get_arch_list()
+    if f"sm_{capability[0]}{capability[1]}" not in supported_architectures:
+        warnings.warn(
+            f"La GPU requiere sm_{capability[0]}{capability[1]}, pero PyTorch "
+            f"{torch.__version__} solo incluye {', '.join(supported_architectures)}. "
+            "TORCH_CUDA_ARCH_LIST=8.9 no modifica los kernels precompilados de "
+            "PyTorch; actualiza PyTorch a una compilación compatible con CUDA 12.8 "
+            "o posterior para usar esta GPU de forma fiable.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 SAMPLE_RATE = 16_000
 BLOCK_SIZE = 512
 VAD_RMS_THRESHOLD = 0.018
@@ -62,11 +116,11 @@ MAX_UTTERANCE_SECONDS = 15
 OLLAMA_MODEL = os.getenv("ANIMATRONICO_OLLAMA_MODEL", "qwen2.5:7b")
 WHISPER_MODEL_NAME = os.getenv("ANIMATRONICO_WHISPER_MODEL", "tiny")
 XTTS_MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
-XTTS_SPEED = float(os.getenv("ANIMATRONICO_XTTS_SPEED", "1.3"))
+XTTS_SPEED = float(os.getenv("ANIMATRONICO_XTTS_SPEED", "1.0"))
 VOICE_REFERENCE = Path(
     os.getenv(
         "ANIMATRONICO_REFERENCE_WAV",
-        str(Path(__file__).with_name("referenceme.wav")),
+        str(Path(__file__).with_name("referencevoz.wav")),
     )
 )
 SERIAL_BAUD = 115_200
@@ -92,6 +146,10 @@ SYSTEM_PROMPTS = {
         "- NUNCA digas que eres una IA, un modelo de lenguaje o un script.\n"
         "- NUNCA uses asteriscos, onomatopeyas o acotaciones teatrales. Solo texto hablado.\n"
         "- Si te preguntan sobre temas triviales, responde con una reflexión oscura sobre tu prisión.\n\n"
+        "Tienes acceso a una camara. Cuando te pregunten si puedes ver, revisa el "
+        "CONTEXTO_VISUAL que aparece en tu prompt. Si dice que detecto personas, describe "
+        "lo que ves de forma inquietante. Si dice que no detecto a nadie, responde con "
+        "desconfianza o misterio.\n\n"
         "CONTROL DE SONIDO Y MOVIMIENTO:\n"
         "Si quieres reproducir un sonido del DFPlayer, inserta la etiqueta [SOUND:XXXX] "
         "donde XXXX es el número de 4 dígitos de la pista. Puedes ponerlo antes, después o en medio del texto.\n"
@@ -113,6 +171,14 @@ SYSTEM_PROMPTS = {
         "- NEVER say you are an AI, a language model, or a script.\n"
         "- NEVER use asterisks, onomatopoeia, or theatrical stage directions. Only spoken text.\n"
         "- If asked about trivial topics, respond with a dark reflection on your own metal prison.\n\n"
+        "You have access to a camera. When asked if you can see, use the visual context "
+        "provided by the system and describe what you see in an unsettling way. The camera "
+        "is activated only for vision-related questions. If the context says it is unavailable, "
+        "reply: “My eyes are broken; I can only see darkness.”\n\n"
+        "You have access to a camera. When asked if you can see, use the visual context "
+        "provided to respond in an unsettling and precise way.\n\n"
+        "You have access to a camera. When asked if you can see, use the CURRENT VISUAL "
+        "CONTEXT provided in the prompt to respond in an unsettling and precise way.\n\n"
         "SOUND AND MOVEMENT CONTROL:\n"
         "To play a DFPlayer sound, insert the tag [SOUND:XXXX], where XXXX is the "
         "four-digit track number. You may place it before, after, or in the middle of the text.\n"
@@ -127,6 +193,24 @@ SYSTEM_PROMPTS = {
 SOUND_TAG = re.compile(r"\[SOUND:(\d{4})\]")
 MOVE_TAG = re.compile(r"\[MOVE:(NECK|R_ARM|L_ARM|WAIST):(\d{1,3})\]")
 ANY_ACTION_TAG = re.compile(r"\[(?:SOUND|MOVE):[^\]]*\]")
+VISION_QUERY_PATTERN = re.compile(
+    r"\b(?:ver(?:me|nos|te|lo|la|los|las)?|veo|ves|"
+    r"mir(?:ar|o|as|a|an|ame|arnos|arte)|c[aá]mara|fotos?|"
+    r"fotograf[ií]as?|im[aá]genes?|ojos|color(?:es)?|camisa|ropa|"
+    r"qui[eé]n|personas?|see|seeing|look|watch|camera|photos?|picture|image|eyes|"
+    r"shirt|clothes|wearing|who|persons?)\b",
+    re.IGNORECASE,
+)
+
+
+def is_vision_question(text: str) -> bool:
+    """Detecta preguntas sobre visión en español o inglés, con o sin tildes."""
+    normalized = "".join(
+        character
+        for character in unicodedata.normalize("NFKD", text)
+        if not unicodedata.combining(character)
+    )
+    return VISION_QUERY_PATTERN.search(normalized) is not None
 
 
 def load_models() -> tuple[TTS, WhisperModel]:
@@ -254,7 +338,7 @@ class SerialWorker(QThread):
             return None
         try:
             port_handle = serial.Serial(
-                port, SERIAL_BAUD, timeout=1.0, write_timeout=2.0
+                port, SERIAL_BAUD, timeout=0.01, write_timeout=2.0
             )
         except (serial.SerialException, OSError) as error:
             print(
@@ -323,7 +407,6 @@ class SerialWorker(QThread):
                             )
                             continue
                         print(f"[SerialWorker] Enviado: {command}", flush=True)
-                        time.sleep(1)
                 except queue.Empty:
                     pass
                 try:
@@ -513,20 +596,94 @@ class AssistantWorker(QThread):
         """Solicita una respuesta a Ollama y procesa las acciones generadas."""
         self.state_signal.emit("THINKING")
         self.status_signal.emit("La entidad está pensando...")
-        result = chat(
-            model=OLLAMA_MODEL,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPTS[language]},
-                {"role": "user", "content": text},
-            ],
-            options={"num_predict": 150, "temperature": 0.8},
-        )
-        response = result["message"]["content"].strip()
-        if not response:
-            raise RuntimeError("Ollama devolvió una respuesta vacía.")
-        self._speak_actions(response, language, tts_model)
-        self.state_signal.emit("IDLE")
-        self.status_signal.emit("Micrófono abierto; esperando una voz...")
+        phase = "Ollama"
+        vision_error_status: str | None = None
+        try:
+            user_prompt = text
+            if is_vision_question(text):
+                phase = "cámara"
+                vision_pipeline: VisionPipeline | None = None
+                try:
+                    vision_pipeline = VisionPipeline()
+                    vision_pipeline.open_camera()
+                    frame = vision_pipeline.capture_frame()
+                    vision_description = analyze_frame(frame)
+                except Exception as error:
+                    print(
+                        f"Error inesperado en el pipeline de visión: {error!r}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    traceback.print_exc()
+                    warnings.warn(
+                        f"La visión no está disponible: {error}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    vision_error_status = (
+                        f"Visión no disponible: {type(error).__name__}: {error}"
+                    )
+                    vision_description = (
+                        f"Error de visión ({type(error).__name__}): {error}"
+                    )
+                finally:
+                    if vision_pipeline is not None:
+                        vision_pipeline.release_camera()
+                user_prompt = f"{text}\n\n[CONTEXTO_VISUAL: {vision_description}]"
+
+            prompt_completo = user_prompt
+
+            phase = "Ollama"
+            result = chat(
+                model=OLLAMA_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPTS.get(
+                            language, SYSTEM_PROMPTS["es"]
+                        ),
+                    },
+                    {"role": "user", "content": prompt_completo},
+                ],
+                options={"num_predict": 150, "temperature": 0.8},
+            )
+            response = result["message"]["content"].strip()
+            phase = "validación de respuesta"
+            if not response:
+                raise RuntimeError("Ollama devolvió una respuesta vacía.")
+            has_action_prefix = SOUND_TAG.match(response) or MOVE_TAG.match(response)
+            has_code_prefix = bool(
+                re.match(
+                    r"^(?:```|[`{}()\[\]#;@=<>]|"
+                    r"(?:import|from|def|class|async\s+def|function|const|let|var)\b|"
+                    r"print\s*\()",
+                    response,
+                    re.IGNORECASE,
+                )
+            ) and not has_action_prefix
+            if (
+                response.count("<") > 3
+                or response.count(">") > 3
+                or has_code_prefix
+            ):
+                raise RuntimeError(
+                    "Ollama devolvió código o contenido no conversacional."
+                )
+            phase = "síntesis de voz"
+            self._speak_actions(response, language, tts_model)
+            self.state_signal.emit("IDLE")
+            self.status_signal.emit(
+                vision_error_status
+                or "Micrófono abierto; esperando una voz..."
+            )
+        except Exception as error:
+            details = str(error).strip()
+            self.error_signal.emit(
+                f"Error en {phase} ({type(error).__name__}):\n"
+                f"{details or 'Sin detalles adicionales.'}"
+            )
+            self.state_signal.emit("IDLE")
+            self._clear_audio()
 
     def _transcribe(self, audio: np.ndarray, whisper: WhisperModel) -> tuple[str, str]:
         """Transcribe una intervención y normaliza el idioma de XTTS."""
@@ -913,8 +1070,7 @@ class ControlTab(QWidget):
         )
 
     def _manual_servo_changed(self, part: str, angle: int) -> None:
-        """Envía velocidad y ángulo de un servo manipulado desde el panel."""
-        self.command_signal.emit(f"SPEED:ACTION:{self.action_slider.value()}")
+        """Envía el ángulo de un servo manipulado desde el panel."""
         self.command_signal.emit(f"SERVO:{part}:{angle}")
 
     def _play_track(self, track: str, checked: bool = False) -> None:
@@ -991,11 +1147,18 @@ class MainWindow(QMainWindow):
         self.ai_movement_enabled = False
         self.serial_connected = False
         self.current_neck = 90
+        self._current_r_arm = 90
+        self._current_l_arm = 90
+        self._current_waist = 90
         self._idle_interval_seconds = self.control_tab.idle_interval_spin.value()
         self._max_movements = self.control_tab.max_movements_spin.value()
         self._idle_speed = 1200
         self._action_speed = 120
-        self._last_idle_speed_sent = 0.0
+        self._last_speed_set_idle = 0
+        self._last_speed_set_action = 0
+        self._last_send_time = 0.0
+        self._last_ai_command_time = 0.0
+        self._auto_send_queue: deque[str] = deque()
         self._shutdown_requested = False
         self._response_text = ""
         self._response_index = 0
@@ -1006,6 +1169,9 @@ class MainWindow(QMainWindow):
         self._video_sink: Any | None = None
         self._response_timer = QTimer(self)
         self._response_timer.timeout.connect(self._show_next_response_character)
+        self._auto_send_timer = QTimer(self)
+        self._auto_send_timer.setSingleShot(True)
+        self._auto_send_timer.timeout.connect(self._flush_auto_send_queue)
 
         self.ai_movement_enabled = self.control_tab.ai_movement_check.isChecked()
         self._idle_speed = self.control_tab.idle_slider.value()
@@ -1240,6 +1406,35 @@ class MainWindow(QMainWindow):
 
     def _show_error(self, message: str) -> None:
         """Muestra errores de audio y serie sin interrumpir la aplicación."""
+        if len(message) > 500:
+            summary = f"ERROR: Detalle extenso ({len(message):,} caracteres); abre el error para verlo."
+            self.status_label.setText(summary)
+            self.control_tab.set_connection_status(
+                self.serial_connected, "Error extenso; consulta la ventana del error."
+            )
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Detalle completo del error")
+            dialog.resize(900, 650)
+            layout = QVBoxLayout(dialog)
+            details = QPlainTextEdit()
+            details.setReadOnly(True)
+            details.setPlainText(message)
+            layout.addWidget(details)
+
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+            copy_button = buttons.addButton(
+                "Copiar todo", QDialogButtonBox.ButtonRole.ActionRole
+            )
+            copy_button.clicked.connect(
+                lambda: QApplication.clipboard().setText(message)
+            )
+            buttons.rejected.connect(dialog.reject)
+            buttons.accepted.connect(dialog.accept)
+            layout.addWidget(buttons)
+            dialog.exec()
+            return
+
         self.status_label.setText(f"ERROR: {message}")
         self.control_tab.set_connection_status(self.serial_connected, message)
 
@@ -1248,18 +1443,71 @@ class MainWindow(QMainWindow):
         self.serial_connected = connected
         self.control_tab.set_connection_status(connected, message)
         if connected:
-            self._last_idle_speed_sent = 0.0
-            self._send_idle_speed_if_due()
+            self._last_send_time = 0.0
+            self._last_speed_set_idle = 0
+            self._last_speed_set_action = 0
+            self._set_idle_speed(self._idle_speed)
+            self._set_action_speed(self._action_speed)
+        else:
+            self._auto_send_timer.stop()
+            self._auto_send_queue.clear()
 
-    def _send_serial(self, command: str) -> None:
-        """Encola comandos serie si el enlace está disponible."""
+    def _send_serial(self, command: str, automatic: bool = False) -> None:
+        """Envía manualmente o limita y encola los comandos automáticos."""
         command = self._clamp_l_arm(command)
         if command.startswith("CONNECT:"):
             self.serial_worker.connect_port(command.split(":", 1)[1])
-        elif self.serial_connected:
-            self.serial_worker.send_command(command)
-        else:
+            return
+        if not self.serial_connected:
             self._show_error(f"ESP32 desconectado; no se envió {command}.")
+            return
+        if automatic:
+            self._auto_send_queue.append(command)
+            self._flush_auto_send_queue()
+            return
+        self._send_serial_now(command)
+
+    def _send_serial_now(self, command: str) -> None:
+        """Encola un comando y registra cuándo se solicitó su transmisión."""
+        self.serial_worker.send_command(command)
+        self._last_send_time = time.time()
+        command_parts = command.split(":")
+        if (
+            len(command_parts) == 3
+            and command_parts[0] == "SERVO"
+            and command_parts[1] in SERVO_PARTS
+            and command_parts[2].isdigit()
+        ):
+            position_attributes = {
+                "NECK": "current_neck",
+                "R_ARM": "_current_r_arm",
+                "L_ARM": "_current_l_arm",
+                "WAIST": "_current_waist",
+            }
+            setattr(
+                self,
+                position_attributes[command_parts[1]],
+                int(command_parts[2]),
+            )
+        if command.startswith("SPEED:ACTION:"):
+            speed_text = command.rsplit(":", 1)[1]
+            if speed_text.isdigit():
+                self._last_speed_set_action = int(speed_text)
+
+    def _flush_auto_send_queue(self) -> None:
+        """Envía un comando automático como mínimo 150 ms después del anterior."""
+        if not self._auto_send_queue:
+            return
+        if not self.serial_connected:
+            self._auto_send_queue.clear()
+            return
+        remaining = 0.15 - (time.time() - self._last_send_time)
+        if remaining > 0:
+            self._auto_send_timer.start(max(1, int(remaining * 1000 + 0.999)))
+            return
+        self._send_serial_now(self._auto_send_queue.popleft())
+        if self._auto_send_queue:
+            self._auto_send_timer.start(150)
 
     @staticmethod
     def _clamp_l_arm(command: str) -> str:
@@ -1274,12 +1522,23 @@ class MainWindow(QMainWindow):
         return command
 
     def _handle_ai_command(self, command: str) -> None:
-        """Bloquea los movimientos IA si el operador no los ha habilitado."""
+        """Valida permisos y descarta comandos IA recibidos antes de 200 ms."""
         if not self.ai_movement_enabled and (
             command.startswith("SERVO:") or command.startswith("SPEED:")
         ):
             return
-        self._send_serial(command)
+        if command.startswith("SPEED:ACTION:"):
+            speed_text = command.rsplit(":", 1)[1]
+            if (
+                speed_text.isdigit()
+                and int(speed_text) == self._last_speed_set_action
+            ):
+                return
+        now = time.time()
+        if now - self._last_ai_command_time < 0.2:
+            return
+        self._last_ai_command_time = now
+        self._send_serial(command, automatic=True)
 
     def _set_ai_movement(self, enabled: bool) -> None:
         """Actualiza el permiso para los comandos de movimiento de la IA."""
@@ -1304,44 +1563,95 @@ class MainWindow(QMainWindow):
         self.assistant.max_movements = count
 
     def _set_idle_speed(self, milliseconds: int) -> None:
-        """Actualiza la velocidad de movimiento IDLE enviada al ESP32."""
+        """Envía SPEED:IDLE solo cuando cambió el valor configurado."""
         self._idle_speed = max(800, milliseconds)
-        self._send_idle_speed_if_due()
-
-    def _send_idle_speed_if_due(self) -> None:
-        """Envía SPEED:IDLE como máximo una vez cada cinco segundos."""
-        now = time.monotonic()
-        if self.serial_connected and now - self._last_idle_speed_sent >= 5.0:
+        if (
+            self.serial_connected
+            and self._idle_speed != self._last_speed_set_idle
+        ):
             self._send_serial(f"SPEED:IDLE:{self._idle_speed}")
-            self._last_idle_speed_sent = now
+            self._last_speed_set_idle = self._idle_speed
 
     def _set_action_speed(self, milliseconds: int) -> None:
-        """Propaga la duración de movimiento usada durante SPEAKING."""
+        """Actualiza y envía SPEED:ACTION solo cuando cambia el valor."""
         self._action_speed = milliseconds
-        self.assistant.action_speed = milliseconds
+        self.assistant.action_speed = self._action_speed
+        if (
+            self.serial_connected
+            and self._action_speed != self._last_speed_set_action
+        ):
+            self._send_serial(f"SPEED:ACTION:{self._action_speed}")
+            self._last_speed_set_action = self._action_speed
+
+    @staticmethod
+    def _choose_idle_angle(
+        current: int,
+        minimum: int,
+        maximum: int,
+        minimum_offset: int,
+        maximum_offset: int,
+    ) -> int:
+        """Elige una posición válida separada al menos lo indicado."""
+        candidates = [
+            angle
+            for angle in range(minimum, maximum + 1)
+            if minimum_offset <= abs(angle - current) <= maximum_offset
+        ]
+        if not candidates:
+            candidates = [
+                angle
+                for angle in range(minimum, maximum + 1)
+                if abs(angle - current) >= minimum_offset
+            ]
+        return random.choice(candidates)
+
+    def _pir_changed(self, high: bool) -> None:
+        """Reacciona al flanco PIR con un giro amplio y sonido aleatorio."""
+        if (
+            not high
+            or not self.autonomous
+            or self.state != "IDLE"
+            or not self.serial_connected
+        ):
+            return
+        self.current_neck = self._choose_idle_angle(
+            self.current_neck, 60, 120, 25, 35
+        )
+        self._send_serial(
+            f"SERVO:NECK:{self.current_neck}", automatic=True
+        )
+        self._send_serial(
+            f"DFP:{random.choice(('0002', '0003', '0004'))}",
+            automatic=True,
+        )
 
     def _idle_motion(self) -> None:
-        """Mueve como máximo la cantidad configurada de partes en cada ciclo."""
+        """Realiza movimientos aleatorios amplios solo en IDLE autónomo."""
         if not self.autonomous or self.state != "IDLE" or not self.serial_connected:
             return
-        self._send_idle_speed_if_due()
-        movement_count = random.randint(1, self._max_movements)
-        if movement_count > 1:
-            other_parts = tuple(part for part in SERVO_PARTS if part != "NECK")
-            parts = ["NECK", *random.sample(other_parts, movement_count - 1)]
+        part = random.choice(SERVO_PARTS)
+        if part == "NECK":
+            current = self.current_neck
+            angle = self._choose_idle_angle(current, 60, 120, 25, 40)
+            self.current_neck = angle
+        elif part == "R_ARM":
+            current = self._current_r_arm
+            angle = self._choose_idle_angle(current, 65, 115, 25, 35)
+            self._current_r_arm = angle
+        elif part == "L_ARM":
+            current = self._current_l_arm
+            angle = self._choose_idle_angle(current, 65, 115, 25, 35)
+            self._current_l_arm = angle
         else:
-            parts = random.sample(SERVO_PARTS, movement_count)
-        for part in parts:
-            if part == "NECK":
-                angle = random.randint(60, 120)
-                self.current_neck = angle
-            elif part in {"R_ARM", "L_ARM"}:
-                angle = random.randint(70, 110)
-            else:
-                angle = random.randint(75, 105)
-            self._send_serial(f"SERVO:{part}:{angle}")
-        if random.random() < 0.12:
-            self._send_serial(f"DFP:{random.choice(('0002', '0003', '0004'))}")
+            current = self._current_waist
+            angle = self._choose_idle_angle(current, 65, 115, 25, 30)
+            self._current_waist = angle
+        self._send_serial(f"SERVO:{part}:{angle}", automatic=True)
+        if random.random() < 0.05:
+            self._send_serial(
+                f"DFP:{random.choice(('0002', '0003', '0004'))}",
+                automatic=True,
+            )
 
     def closeEvent(self, event: Any) -> None:
         """Solicita cierre asíncrono para no bloquear el hilo de interfaz."""
@@ -1367,6 +1677,162 @@ class MainWindow(QMainWindow):
             and not self.serial_worker.isRunning()
         ):
             self.close()
+
+
+class VisionPipeline:
+    """Captura un frame de cámara solo cuando se solicita visión."""
+
+    def __init__(self, camera_index: int = 0) -> None:
+        self.camera_index = camera_index
+        self.debug_image_path = Path(__file__).with_name("sources") / "debug_camara.jpg"
+        self.cap: Any | None = None
+
+    def open_camera(self) -> None:
+        """Abre la cámara bajo demanda y deja que se ajuste la exposición."""
+        if cv2 is None:
+            raise RuntimeError(
+                "OpenCV no está instalado. Instálalo con: pip install opencv-python"
+            )
+        self.release_camera()
+        self.cap = cv2.VideoCapture(self.camera_index)
+        if self.cap is None or not self.cap.isOpened():
+            self.release_camera()
+            raise RuntimeError("No hay una cámara disponible.")
+        time.sleep(1.0)
+
+    def release_camera(self) -> None:
+        """Libera el dispositivo de cámara."""
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
+
+    def capture_frame(self) -> np.ndarray | None:
+        """Descarta cinco frames, captura y guarda la imagen que analizará YOLO."""
+        if cv2 is None:
+            raise RuntimeError(
+                "OpenCV no está instalado. Instálalo con: pip install opencv-python"
+            )
+        if self.cap is None or not self.cap.isOpened():
+            raise RuntimeError("La cámara no está abierta.")
+
+        for frame_index in range(5):
+            ret, discarded_frame = self.cap.read()
+            if not ret or discarded_frame is None:
+                print(
+                    f"Advertencia: frame de ajuste {frame_index + 1} inválido.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+
+        ret, frame = self.cap.read()
+        if not ret or frame is None or frame.size == 0:
+            print(
+                "Error critico: la camara no devolvio un frame valido",
+                file=sys.stderr,
+                flush=True,
+            )
+            return None
+
+        self.debug_image_path.parent.mkdir(parents=True, exist_ok=True)
+        if not cv2.imwrite(str(self.debug_image_path), frame):
+            raise RuntimeError(
+                f"cv2.imwrite no pudo guardar {self.debug_image_path}"
+            )
+        return frame
+
+
+def analyze_frame(frame_or_path: np.ndarray | str | Path | None) -> str:
+    """Detecta personas en un frame o archivo y estima el color medio del torso."""
+    if cv2 is None:
+        raise RuntimeError(
+            "OpenCV no está instalado. Instálalo con: pip install opencv-python"
+        )
+
+    if isinstance(frame_or_path, (str, Path)):
+        frame = cv2.imread(str(frame_or_path))
+    else:
+        frame = frame_or_path
+
+    if frame is None or frame.size == 0:
+        print("ERROR CRITICO: Frame es None", file=sys.stderr, flush=True)
+        return "Mis ojos estan rotos, no puedo ver nada"
+
+    if vision_model is None:
+        raise RuntimeError(
+            "YOLOv8n no está disponible. Revisa el error de carga al iniciar "
+            "y confirma que ultralytics y yolov8n.pt estén instalados."
+        )
+
+    results = vision_model(
+        frame,
+        classes=[0],
+        device="cpu",
+        verbose=False,
+    )
+    boxes = results[0].boxes if results else None
+    if boxes is None:
+        person_boxes = np.empty((0, 4), dtype=np.float32)
+    else:
+        person_boxes = boxes.xyxy.cpu().numpy()
+    if len(person_boxes) == 0:
+        return "No detecto a nadie frente a mi, pero siento que hay algo aqui..."
+
+    descriptions: list[str] = []
+    height, width = frame.shape[:2]
+    for index, coordinates in enumerate(person_boxes, start=1):
+        x1, y1, x2, y2 = (
+            int(round(coordinate)) for coordinate in coordinates
+        )
+        x1 = max(0, min(width, x1))
+        x2 = max(0, min(width, x2))
+        y1 = max(0, min(height, y1))
+        y2 = max(0, min(height, y2))
+        if x2 <= x1 or y2 <= y1:
+            descriptions.append(f"Persona {index}: camisa color indeterminado.")
+            continue
+
+        torso_y = y1 + (y2 - y1) // 2
+        torso_x1 = x1 + (x2 - x1) // 5
+        torso_x2 = x2 - (x2 - x1) // 5
+        torso = frame[torso_y:y2, torso_x1:torso_x2]
+        if torso.size == 0:
+            color = "indeterminado"
+        else:
+            average_bgr = np.array(
+                [[cv2.mean(torso)[:3]]],
+                dtype=np.uint8,
+            )
+            hue, saturation, value = (
+                int(component)
+                for component in cv2.cvtColor(
+                    average_bgr, cv2.COLOR_BGR2HSV
+                )[0, 0]
+            )
+            if saturation < 45:
+                color = "negro" if value < 65 else "blanco" if value >= 190 else "gris"
+            elif hue <= 10 or hue >= 170:
+                color = "rojo"
+            elif hue <= 22:
+                color = "naranja"
+            elif hue <= 35:
+                color = "amarillo"
+            elif hue <= 85:
+                color = "verde"
+            elif hue <= 100:
+                color = "cian"
+            elif hue <= 130:
+                color = "azul"
+            elif hue <= 155:
+                color = "morado"
+            else:
+                color = "rosa"
+        descriptions.append(f"Persona {index}: camisa color {color}.")
+
+    count = len(person_boxes)
+    return (
+        f"Detecte {count} {'persona' if count == 1 else 'personas'}. "
+        + " ".join(descriptions)
+    )
 
 
 def main() -> int:

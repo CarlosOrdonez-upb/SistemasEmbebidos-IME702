@@ -1,0 +1,10 @@
+numpy
+ollama
+sounddevice
+torch
+TTS
+faster-whisper
+PyQt6
+pyserial
+opencv-python<4.12
+ultralytics

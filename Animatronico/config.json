@@ -1,7 +1,9 @@
 {
-  "idle_speed": 1200,
-  "action_speed": 120,
-  "autonomous": false,
+  "idle_speed": 816,
+  "action_speed": 114,
+  "autonomous": true,
+  "idle_interval_seconds": 3,
+  "max_movements": 2,
   "ai_movement": true,
   "mute": false
 }

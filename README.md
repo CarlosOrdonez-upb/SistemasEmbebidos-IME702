@@ -39,6 +39,7 @@ Repositorio dedicado al desarrollo, documentación y simulación de proyectos de
 | 02 | **[Control de Relé](./02_Control_Rele/)** | Etapa de potencia y aislamiento para motores DC. | ✅ Completado | [📄 Código](./02_Control_Rele/codigo/) • [📦 Materiales](./02_Control_Rele/materiales.md) |
 | 03 | **[Control de Bombas + GUI](./03_Control_Bombas/)** | Sistema con sensor ultrasónico, paradas de seguridad y panel de control. | ✅ Completado | [📄 Código](./03_Control_Bombas/codigo/) • [📦 Materiales](./03_Control_Bombas/materiales.md) |
 | 04 | **[Caja Térmica Inteligente](./04_Caja_Termica/)** | Cámara con control por histéresis, módulo Peltier, servos para purga y foco. | 🟨 En desarrollo | [📄 Código](./04_Caja_Termica/codigo/) • [📦 Materiales](./04_Caja_Termica/materiales.md) |
+| 05 | **[Animatrónico IME 702](./Animatronico/)** | Sistema ciberfísico autónomo con IA local, visión YOLOv8n, voz clonada y control de servos mediante ESP32. | ✅ Completado | [📄 README](./Animatronico/README.md) • [🎮 Aplicación](./Animatronico/animatronico_control.py) • [🔌 Firmware](./Animatronico/bebe_esp32.ino) |
 
 > 🌐 **Prueba tu mismo los entornos:** Todos los proyectos cuentan con un [Gemelo Digital para interactuar ](https://coe-embedded-lab.streamlit.app).
 
