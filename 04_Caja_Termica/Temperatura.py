@@ -648,6 +648,25 @@ class SimulacionCuarto(QMainWindow):
                 self.prueba_conexion_activa = False
                 self.actualizar_boton_prueba()
 
+    def actualizar_rango_interfaz(self, temp_minima, temp_maxima):
+        if (
+            not math.isfinite(temp_minima)
+            or not math.isfinite(temp_maxima)
+            or temp_minima >= temp_maxima
+        ):
+            return
+
+        self.lbl_rango_actual.setText(
+            f"Rango: {temp_minima:.1f} °C - {temp_maxima:.1f} °C"
+        )
+        for control, valor in (
+            (self.spin_temp_minima, temp_minima),
+            (self.spin_temp_maxima, temp_maxima),
+        ):
+            anterior = control.blockSignals(True)
+            control.setValue(valor)
+            control.blockSignals(anterior)
+
     def procesar_linea(self, linea):
         partes = linea.split(",")
         if len(partes) >= 3 and partes[0] == "WARN" and partes[1] == "DEWPOINT":
@@ -659,6 +678,14 @@ class SimulacionCuarto(QMainWindow):
                     return
                 if math.isfinite(punto_rocio) and math.isfinite(temp_minima):
                     self.mostrar_alerta_purga(punto_rocio, temp_minima)
+            return
+        if len(partes) == 4 and partes[:2] == ["ACK", "SETRANGE"]:
+            try:
+                temp_minima = float(partes[2])
+                temp_maxima = float(partes[3])
+            except ValueError:
+                return
+            self.actualizar_rango_interfaz(temp_minima, temp_maxima)
             return
         if len(partes) >= 3 and partes[0] == "ACK" and partes[1] == "PURGE":
             self.lbl_estado.setText("Estado: Purga de aire iniciada")
@@ -713,15 +740,7 @@ class SimulacionCuarto(QMainWindow):
                 except ValueError:
                     pass
                 else:
-                    if (
-                        math.isfinite(temp_minima)
-                        and math.isfinite(temp_maxima)
-                        and temp_minima < temp_maxima
-                    ):
-                        self.lbl_rango_actual.setText(
-                            f"Rango: {temp_minima:.1f} °C - "
-                            f"{temp_maxima:.1f} °C"
-                        )
+                    self.actualizar_rango_interfaz(temp_minima, temp_maxima)
             else:
                 self.lbl_rango_actual.setText(
                     "Rango: no disponible (firmware anterior)"
@@ -762,15 +781,15 @@ class SimulacionCuarto(QMainWindow):
                 self.puertas_abiertas = partes[5] == "1"
                 fase = partes[6]
                 humedad = float(partes[7])
+                if not math.isfinite(humedad):
+                    humedad = None
                 self.prueba_conexion_activa = fase == "TESTING"
                 if len(partes) in (10, 11):
                     temp_minima = float(partes[8])
                     temp_maxima = float(partes[9])
-                    if (
-                        not math.isfinite(temp_minima)
-                        or not math.isfinite(temp_maxima)
-                        or temp_minima >= temp_maxima
-                    ):
+                    if not math.isfinite(temp_minima) or not math.isfinite(
+                        temp_maxima
+                    ) or temp_minima >= temp_maxima:
                         return
                 else:
                     temp_minima = None
@@ -794,9 +813,7 @@ class SimulacionCuarto(QMainWindow):
                 "Rango: no disponible (firmware anterior)"
             )
         else:
-            self.lbl_rango_actual.setText(
-                f"Rango: {temp_minima:.1f} °C - {temp_maxima:.1f} °C"
-            )
+            self.actualizar_rango_interfaz(temp_minima, temp_maxima)
 
         self.lbl_temp_actual.setText(
             f"{temp:.1f} °C"

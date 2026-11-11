@@ -1,263 +1,683 @@
-/*
- * Firmware del bebé animatrónico IME 702 para ESP32 DevKit V1 (30 pines).
- *
- * En Arduino IDE, selecciona "ESP32 Dev Module" en Herramientas > Placa.
- * Si no aparece, instala el soporte ESP32 desde Preferencias > URLs
- * adicionales del Gestor de placas:
- * https://dl.espressif.com/dl/package_esp32_index.json
- *
- * Bibliotecas del IDE Arduino:
- *   - ESP32Servo
- *   - DFRobotDFPlayerMini
- *
- * Use una fuente externa de 5 V dimensionada para los servos y conecte las
- * tierras de fuente, ESP32 y DFPlayer. No alimente los servos desde el pin 3V3.
- * Conecta DFPlayer TX -> GPIO 16 (RX2). Recordatorio: resistencia 1K en RX
- * del DFPlayer (GPIO 17 (TX2) -> 1K -> RX DFPlayer).
- */
-
-#include <Arduino.h>
 #include <ESP32Servo.h>
-#include <DFRobotDFPlayerMini.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
 
-static constexpr uint32_t DFPLAYER_BAUD = 9600;
-static constexpr uint8_t PIN_NECK = 13;
-static constexpr uint8_t PIN_R_ARM = 12;
-static constexpr uint8_t PIN_L_ARM = 14;
-static constexpr uint8_t PIN_WAIST = 27;
-static constexpr uint8_t PIN_GLOBO = 26;
-static constexpr uint8_t PIN_DF_TX = 17;
-static constexpr uint8_t PIN_DF_RX = 16;
-static constexpr uint32_t SERVO_TICK_MS = 20;
-static constexpr uint32_t GLOBO_POP_HOLD_MS = 500;
+#ifdef DEBUG_MODE
+#define DEBUG_PRINT(...) Serial.printf(__VA_ARGS__)
+#else
+#define DEBUG_PRINT(...) do {} while (0)
+#endif
 
-struct ServoMotion {
-  Servo servo;
-  const char *name;
-  uint8_t pin;
-  float startAngle;
-  float targetAngle;
-  float currentAngle;
-  uint32_t startedAt;
-  uint32_t durationMs;
-  bool moving;
+const uint8_t PIN_LM35 = 34;
+const uint8_t PIN_POT_MIN = 32;
+const uint8_t PIN_POT_MAX = 33;
+const uint8_t PIN_FOCO = 5;
+const uint8_t PIN_PELTIER = 19;
+const uint8_t PIN_FANS = 18;
+const uint8_t PIN_SERVO_TAPA_1 = 22;
+const uint8_t PIN_SERVO_TAPA_2 = 23;
+
+const uint8_t SERVO_CERRADO = 0;
+const uint8_t SERVO_ABIERTO = 160;
+const float TEMPERATURA_CONFIG_MINIMA = 20.0f;
+const float TEMPERATURA_CONFIG_MAXIMA = 60.0f;
+const float TEMPERATURA_SENSOR_MINIMA = 10.0f;
+const float TEMPERATURA_SENSOR_MAXIMA = 60.0f;
+const float DIFERENCIA_PURGA_AUTOMATICA = 2.5f;
+
+const unsigned long INTERVALO_SENSOR_MS = 2000;
+const unsigned long INTERVALO_ESTADO_MS = 500;
+const unsigned long ESPERA_APERTURA_MS = 1250;
+const unsigned long TIEMPO_VENTILACION_MS = 20000;
+const unsigned long TIEMPO_SERVO_MS = 400;
+const unsigned long TIMEOUT_COMUNICACION_MS = 30000;
+const unsigned long TIEMPO_MAXIMO_FOCO_MS = 10UL * 60UL * 1000UL;
+const unsigned long DESCANSO_FOCO_MS = 1UL * 60UL * 1000UL;
+const unsigned long TIEMPO_MAXIMO_PELTIER_MS = 15UL * 60UL * 1000UL;
+const unsigned long DESCANSO_PELTIER_MS = 2UL * 60UL * 1000UL;
+
+enum Fase {
+  NORMAL,
+  PURGA_APERTURA,
+  PURGA_VENTILACION,
+  PURGA_CIERRE,
+  ERROR_SENSOR
 };
 
-ServoMotion servos[] = {
-    {Servo(), "NECK", PIN_NECK, 90, 90, 90, 0, 500, false},
-    {Servo(), "R_ARM", PIN_R_ARM, 90, 90, 90, 0, 500, false},
-    {Servo(), "L_ARM", PIN_L_ARM, 90, 90, 90, 0, 500, false},
-    {Servo(), "WAIST", PIN_WAIST, 90, 90, 90, 0, 500, false},
-    {Servo(), "GLOBO", PIN_GLOBO, 0, 0, 0, 0, 1000, false},
+enum ModoTermico {
+  MODO_MANTENER,
+  MODO_CALENTAR,
+  MODO_ENFRIAR
 };
 
-static constexpr size_t BODY_SERVO_COUNT = 4;
-static constexpr size_t SERVO_COUNT = sizeof(servos) / sizeof(servos[0]);
-HardwareSerial dfSerial(2);
-DFRobotDFPlayerMini player;
-bool playerReady = false;
-uint32_t activeMoveDurationMs = 500;
-uint32_t lastServoTick = 0;
-bool popHolding = false;
-uint32_t popStartedAt = 0;
-String commandBuffer;
+Servo servoTapa1;
+Servo servoTapa2;
 
-/**
- * Find a body servo by its protocol name; the GLOBO is intentionally excluded.
- */
-ServoMotion *findBodyServo(const String &part) {
-  for (size_t i = 0; i < BODY_SERVO_COUNT; ++i) {
-    if (part.equals(servos[i].name)) {
-      return &servos[i];
+Fase fase = NORMAL;
+ModoTermico modoTermico = MODO_MANTENER;
+ModoTermico modoCiclo = MODO_CALENTAR;
+float tempMinima = 28.0f;
+float tempMaxima = 35.0f;
+float temperaturaActual = NAN;
+float humedadActual = NAN;
+float ultimaTempMinimaEnviada = NAN;
+float ultimaTempMaximaEnviada = NAN;
+bool sensorValido = false;
+bool primeraLectura = true;
+bool modoPrueba = false;
+bool cicloActivo = false;
+bool controlDetenido = true;
+bool objetivoCicloMaximo = true;
+bool purgaAutomaticaEnBajada = false;
+bool riesgoPuntoRocio = false;
+bool timeoutComunicacionReportado = false;
+bool focoEnDescanso = false;
+bool peltierEnDescanso = false;
+char bufferComando[48];
+size_t indiceComando = 0;
+unsigned long ultimoSensorMs = 0;
+unsigned long ultimoEstadoMs = 0;
+unsigned long inicioFaseMs = 0;
+unsigned long ultimoComandoMs = 0;
+unsigned long inicioFocoMs = 0;
+unsigned long inicioPeltierMs = 0;
+unsigned long inicioDescansoFocoMs = 0;
+unsigned long inicioDescansoPeltierMs = 0;
+
+const char *nombreFaseBase(Fase valor) {
+  switch (valor) {
+    case NORMAL: return "NORMAL";
+    case PURGA_APERTURA: return "PURGA_APERTURA";
+    case PURGA_VENTILACION: return "PURGA_VENTILACION";
+    case PURGA_CIERRE: return "PURGA_CIERRE";
+    case ERROR_SENSOR: return "ERROR_SENSOR";
+  }
+  return "DESCONOCIDA";
+}
+
+void cambiarFase(Fase nuevaFase) {
+  if (fase != nuevaFase) {
+    DEBUG_PRINT("DEBUG,FASE,%s,%s\n",
+                nombreFaseBase(fase), nombreFaseBase(nuevaFase));
+    fase = nuevaFase;
+  }
+}
+
+const char *nombreModoTermico(ModoTermico modo) {
+  switch (modo) {
+    case MODO_MANTENER: return "MANTENER";
+    case MODO_CALENTAR: return "CALENTAR";
+    case MODO_ENFRIAR: return "ENFRIAR";
+  }
+  return "DESCONOCIDO";
+}
+
+void cambiarModoTermico(ModoTermico nuevoModo) {
+  if (modoTermico != nuevoModo) {
+    DEBUG_PRINT("DEBUG,CONTROL,%s,%s\n",
+                nombreModoTermico(modoTermico), nombreModoTermico(nuevoModo));
+    modoTermico = nuevoModo;
+  }
+}
+
+float calcularPuntoRocio(float temperatura, float humedad) {
+  if (!isfinite(temperatura) || !isfinite(humedad) ||
+      humedad <= 0.0f || humedad > 100.0f) {
+    return NAN;
+  }
+
+  float gamma = log(humedad / 100.0f) +
+                (17.67f * temperatura) / (243.5f + temperatura);
+  float denominador = 17.67f - gamma;
+  if (denominador <= 0.0f) {
+    return NAN;
+  }
+  return (243.5f * gamma) / denominador;
+}
+
+void actualizarRiesgoPuntoRocio(float temperatura, float humedad) {
+  if (!isfinite(humedad)) {
+    if (riesgoPuntoRocio) {
+      Serial.println("WARN,DEWPOINT,CLEAR");
+      riesgoPuntoRocio = false;
     }
-  }
-  return nullptr;
-}
-
-/**
- * Start a timed, non-blocking transition to a validated servo angle.
- */
-void moveServo(ServoMotion &motion, int angle, uint32_t durationMs) {
-  if (angle < 0 || angle > 180) {
     return;
   }
-  motion.startAngle = motion.currentAngle;
-  motion.targetAngle = static_cast<float>(angle);
-  motion.startedAt = millis();
-  motion.durationMs = max(static_cast<uint32_t>(1), durationMs);
-  motion.moving = true;
+
+  float puntoRocio = calcularPuntoRocio(temperatura, humedad);
+  bool riesgoActual = isfinite(puntoRocio) && puntoRocio >= tempMinima;
+  if (riesgoActual && !riesgoPuntoRocio) {
+    Serial.print("WARN,DEWPOINT,RISK,");
+    Serial.print(puntoRocio, 1);
+    Serial.print(',');
+    Serial.println(tempMinima, 1);
+  } else if (!riesgoActual && riesgoPuntoRocio) {
+    Serial.println("WARN,DEWPOINT,CLEAR");
+  }
+  riesgoPuntoRocio = riesgoActual;
 }
 
-/**
- * Advance one servo interpolation step without waiting or delaying the loop.
- */
-void updateServo(ServoMotion &motion, uint32_t now) {
-  if (!motion.moving) {
-    return;
-  }
-  const uint32_t elapsed = now - motion.startedAt;
-  const float progress = min(1.0f, static_cast<float>(elapsed) /
-                                      static_cast<float>(motion.durationMs));
-  motion.currentAngle =
-      motion.startAngle + (motion.targetAngle - motion.startAngle) * progress;
-  motion.servo.write(static_cast<int>(motion.currentAngle + 0.5f));
-  if (progress >= 1.0f) {
-    motion.currentAngle = motion.targetAngle;
-    motion.moving = false;
+void actualizarLimitesDesdePotenciometros() {
+  float milivoltiosMin = static_cast<float>(analogReadMilliVolts(PIN_POT_MIN));
+  float milivoltiosMax = static_cast<float>(analogReadMilliVolts(PIN_POT_MAX));
+  milivoltiosMin = fminf(3300.0f, fmaxf(0.0f, milivoltiosMin));
+  milivoltiosMax = fminf(3300.0f, fmaxf(0.0f, milivoltiosMax));
+
+  float nuevaTempMinima = TEMPERATURA_CONFIG_MINIMA +
+      milivoltiosMin * (TEMPERATURA_CONFIG_MAXIMA -
+                        TEMPERATURA_CONFIG_MINIMA) / 3300.0f;
+  float nuevaTempMaxima = TEMPERATURA_CONFIG_MINIMA +
+      milivoltiosMax * (TEMPERATURA_CONFIG_MAXIMA -
+                        TEMPERATURA_CONFIG_MINIMA) / 3300.0f;
+
+  nuevaTempMinima = fminf(nuevaTempMinima,
+                          TEMPERATURA_CONFIG_MAXIMA - 2.0f);
+  nuevaTempMaxima = fmaxf(nuevaTempMaxima, nuevaTempMinima + 2.0f);
+
+  if (!isfinite(ultimaTempMinimaEnviada) ||
+      !isfinite(ultimaTempMaximaEnviada) ||
+      fabsf(nuevaTempMinima - ultimaTempMinimaEnviada) > 0.5f ||
+      fabsf(nuevaTempMaxima - ultimaTempMaximaEnviada) > 0.5f) {
+    tempMinima = nuevaTempMinima;
+    tempMaxima = nuevaTempMaxima;
+    ultimaTempMinimaEnviada = tempMinima;
+    ultimaTempMaximaEnviada = tempMaxima;
+
+    Serial.print("ACK,SETRANGE,");
+    Serial.print(tempMinima, 1);
+    Serial.print(',');
+    Serial.println(tempMaxima, 1);
   }
 }
 
-/**
- * Send an integer track number to the DFPlayer when initialization succeeded.
- */
-void playTrack(const String &trackText) {
-  if (!playerReady || trackText.length() != 4) {
-    return;
+void limitarTiempoSalidas(bool &foco, bool &peltier, unsigned long ahora) {
+  if (foco && peltier) {
+    peltier = false;
   }
-  for (size_t i = 0; i < trackText.length(); ++i) {
-    if (!isDigit(trackText[i])) {
+
+  bool focoActivo = digitalRead(PIN_FOCO) == HIGH;
+  if (focoActivo && ahora - inicioFocoMs >= TIEMPO_MAXIMO_FOCO_MS) {
+    focoEnDescanso = true;
+    inicioDescansoFocoMs = ahora;
+    focoActivo = false;
+    DEBUG_PRINT("DEBUG,SEGURIDAD,FOCO_TIEMPO_MAXIMO\n");
+  }
+  if (focoEnDescanso &&
+      ahora - inicioDescansoFocoMs >= DESCANSO_FOCO_MS) {
+    focoEnDescanso = false;
+    DEBUG_PRINT("DEBUG,SEGURIDAD,FOCO_DESCANSO_COMPLETO\n");
+  }
+  if (!focoActivo && foco && !focoEnDescanso) {
+    inicioFocoMs = ahora;
+    focoActivo = true;
+  }
+  if (!foco) {
+    focoActivo = false;
+  }
+
+  bool peltierActiva = digitalRead(PIN_PELTIER) == HIGH;
+  if (peltierActiva &&
+      ahora - inicioPeltierMs >= TIEMPO_MAXIMO_PELTIER_MS) {
+    peltierEnDescanso = true;
+    inicioDescansoPeltierMs = ahora;
+    peltierActiva = false;
+    DEBUG_PRINT("DEBUG,SEGURIDAD,PELTIER_TIEMPO_MAXIMO\n");
+  }
+  if (peltierEnDescanso &&
+      ahora - inicioDescansoPeltierMs >= DESCANSO_PELTIER_MS) {
+    peltierEnDescanso = false;
+    DEBUG_PRINT("DEBUG,SEGURIDAD,PELTIER_DESCANSO_COMPLETO\n");
+  }
+  if (!peltierActiva && peltier && !peltierEnDescanso) {
+    inicioPeltierMs = ahora;
+    peltierActiva = true;
+  }
+  if (!peltier) {
+    peltierActiva = false;
+  }
+
+  foco = foco && !focoEnDescanso;
+  peltier = peltier && !peltierEnDescanso;
+}
+
+void escribirSalidas(bool foco, bool peltier, bool ventiladores) {
+  unsigned long ahora = millis();
+  limitarTiempoSalidas(foco, peltier, ahora);
+  bool focoEstabaActivo = digitalRead(PIN_FOCO) == HIGH;
+  bool peltierEstabaActiva = digitalRead(PIN_PELTIER) == HIGH;
+  digitalWrite(PIN_FOCO, foco ? HIGH : LOW);
+  digitalWrite(PIN_PELTIER, peltier ? HIGH : LOW);
+  digitalWrite(PIN_FANS, ventiladores ? HIGH : LOW);
+  if (focoEstabaActivo != foco) {
+    DEBUG_PRINT("DEBUG,SALIDA,FOCO,%s\n", foco ? "ON" : "OFF");
+  }
+  if (peltierEstabaActiva != peltier) {
+    DEBUG_PRINT("DEBUG,SALIDA,PELTIER,%s\n", peltier ? "ON" : "OFF");
+  }
+}
+
+void iniciarPurga(unsigned long ahora) {
+  escribirSalidas(false, false, false);
+  servoTapa1.write(SERVO_ABIERTO);
+  servoTapa2.write(SERVO_ABIERTO);
+  cambiarFase(PURGA_APERTURA);
+  inicioFaseMs = ahora;
+}
+
+void iniciarCiclo(bool objetivoMaximo) {
+  cicloActivo = true;
+  controlDetenido = false;
+  objetivoCicloMaximo = objetivoMaximo;
+  purgaAutomaticaEnBajada = false;
+  cambiarFase(NORMAL);
+
+  float objetivo = objetivoMaximo ? tempMaxima : tempMinima;
+  if (temperaturaActual == objetivo) {
+    objetivoCicloMaximo = !objetivoMaximo;
+    modoCiclo = objetivoMaximo ? MODO_ENFRIAR : MODO_CALENTAR;
+  } else if (temperaturaActual < objetivo) {
+    modoCiclo = MODO_CALENTAR;
+  } else {
+    modoCiclo = MODO_ENFRIAR;
+  }
+  cambiarModoTermico(modoCiclo);
+  escribirSalidas(false, false, false);
+}
+
+void detenerControl() {
+  cicloActivo = false;
+  controlDetenido = true;
+  modoPrueba = false;
+  purgaAutomaticaEnBajada = false;
+  cambiarModoTermico(MODO_MANTENER);
+  cambiarFase(sensorValido ? NORMAL : ERROR_SENSOR);
+  servoTapa1.write(SERVO_CERRADO);
+  servoTapa2.write(SERVO_CERRADO);
+  escribirSalidas(false, false, false);
+}
+
+void procesarComando(char *comando, unsigned long ahora) {
+  ultimoComandoMs = ahora;
+  timeoutComunicacionReportado = false;
+  if (strcmp(comando, "TEST,1") == 0 || strcmp(comando, "TEST,0") == 0) {
+    bool activar = comando[5] == '1';
+    if (activar && (cicloActivo || fase != NORMAL)) {
+      Serial.println("ERR,TEST,BUSY");
       return;
     }
-  }
-  const int track = trackText.toInt();
-  if (track >= 1 && track <= 9999) {
-    player.play(static_cast<uint16_t>(track));
-  }
-}
-
-/**
- * Trigger the explicit pop sequence; no other command moves the GLOBO servo.
- */
-void startPop() {
-  ServoMotion &globo = servos[BODY_SERVO_COUNT];
-  popHolding = true;
-  popStartedAt = millis();
-  moveServo(globo, 180, 150);
-}
-
-/**
- * Parse one complete protocol line; malformed input is ignored silently.
- */
-void handleCommand(const String &line) {
-  if (line == "POP") {
-    startPop();
-    return;
-  }
-  if (line == "RESET_GLOBO") {
-    popHolding = false;
-    moveServo(servos[BODY_SERVO_COUNT], 0, 1800);
-    return;
-  }
-  if (line.startsWith("DFP:")) {
-    playTrack(line.substring(4));
-    return;
-  }
-  if (line.startsWith("SPEED:")) {
-    const int separator = line.indexOf(':', 6);
-    if (separator < 0) {
-      return;
-    }
-    const String mode = line.substring(6, separator);
-    const String valueText = line.substring(separator + 1);
-    const long value = valueText.toInt();
-    if ((mode == "IDLE" || mode == "ACTION") &&
-        valueText.length() > 0 && value >= 100 && value <= 3000) {
-      activeMoveDurationMs = static_cast<uint32_t>(value);
-    }
-    return;
-  }
-  if (!line.startsWith("SERVO:")) {
-    return;
-  }
-
-  const int separator = line.indexOf(':', 6);
-  if (separator < 0) {
-    return;
-  }
-  const String part = line.substring(6, separator);
-  const String angleText = line.substring(separator + 1);
-  if (angleText.isEmpty()) {
-    return;
-  }
-  for (size_t i = 0; i < angleText.length(); ++i) {
-    if (!isDigit(angleText[i])) {
-      return;
-    }
-  }
-  int angle = angleText.toInt();
-  ServoMotion *motion = findBodyServo(part);
-  if (part == "L_ARM" && angle > 120) {
-    angle = 120;
-  }
-  if (motion != nullptr && angle >= 0 && angle <= 180) {
-    moveServo(*motion, angle, activeMoveDurationMs);
-  }
-}
-
-/**
- * Read serial input incrementally and dispatch only newline-terminated commands.
- */
-void readCommands() {
-  while (Serial.available() > 0) {
-    const char incoming = static_cast<char>(Serial.read());
-    if (incoming == '\n') {
-      commandBuffer.trim();
-      if (!commandBuffer.isEmpty()) {
-        handleCommand(commandBuffer);
+    if (modoPrueba != activar) {
+      modoPrueba = activar;
+      cambiarFase(sensorValido ? NORMAL : ERROR_SENSOR);
+      cambiarModoTermico(MODO_MANTENER);
+      if (modoPrueba) {
+        servoTapa1.write(SERVO_ABIERTO);
+        servoTapa2.write(SERVO_ABIERTO);
+        escribirSalidas(false, false, true);
+      } else {
+        servoTapa1.write(SERVO_CERRADO);
+        servoTapa2.write(SERVO_CERRADO);
+        escribirSalidas(false, false, false);
       }
-      commandBuffer = "";
-    } else if (incoming != '\r' && commandBuffer.length() < 80) {
-      commandBuffer += incoming;
-    } else if (commandBuffer.length() >= 80) {
-      commandBuffer = "";
+    }
+    Serial.print("ACK,TEST,");
+    Serial.println(modoPrueba ? "ON" : "OFF");
+    return;
+  }
+
+  if (strcmp(comando, "PURGE") == 0) {
+    if (!sensorValido) {
+      Serial.println("ERR,PURGE,SENSOR");
+      return;
+    }
+    if (modoPrueba) {
+      Serial.println("ERR,PURGE,TESTING");
+      return;
+    }
+    if (fase != NORMAL) {
+      Serial.println("ERR,PURGE,BUSY");
+      return;
+    }
+    iniciarPurga(ahora);
+    Serial.println("ACK,PURGE,STARTED");
+    return;
+  }
+
+  if (strcmp(comando, "STOP") == 0) {
+    detenerControl();
+    Serial.println("ACK,STOP,OK");
+    return;
+  }
+
+  if (strcmp(comando, "CYCLE,MIN") == 0 ||
+      strcmp(comando, "CYCLE,MAX") == 0) {
+    if (!sensorValido) {
+      Serial.println("ERR,CYCLE,SENSOR");
+      return;
+    }
+    if (modoPrueba) {
+      Serial.println("ERR,CYCLE,TESTING");
+      return;
+    }
+    if (fase != NORMAL || cicloActivo) {
+      Serial.println("ERR,CYCLE,BUSY");
+      return;
+    }
+    bool objetivoMaximo = comando[7] == 'A';
+    iniciarCiclo(objetivoMaximo);
+    Serial.print("ACK,CYCLE,STARTED,");
+    Serial.println(objetivoMaximo ? "MAX" : "MIN");
+    return;
+  }
+
+  if (strncmp(comando, "SETRANGE,", 9) != 0) {
+    return;
+  }
+  if (cicloActivo) {
+    Serial.println("ERR,SETRANGE,BUSY");
+    return;
+  }
+
+  char *finMinima;
+  float nuevaMinima = strtof(comando + 9, &finMinima);
+  if (finMinima == comando + 9 || *finMinima != ',') {
+    Serial.println("ERR,SETRANGE,FORMAT");
+    return;
+  }
+
+  char *inicioMaxima = finMinima + 1;
+  char *finMaxima;
+  float nuevaMaxima = strtof(inicioMaxima, &finMaxima);
+  if (finMaxima == inicioMaxima || *finMaxima != '\0' ||
+      !isfinite(nuevaMinima) || !isfinite(nuevaMaxima) ||
+      nuevaMinima < TEMPERATURA_CONFIG_MINIMA ||
+      nuevaMinima > TEMPERATURA_CONFIG_MAXIMA ||
+      nuevaMaxima < TEMPERATURA_CONFIG_MINIMA ||
+      nuevaMaxima > TEMPERATURA_CONFIG_MAXIMA ||
+      nuevaMinima + 2.0f > nuevaMaxima) {
+    Serial.println("ERR,SETRANGE,RANGE");
+    return;
+  }
+
+  tempMinima = nuevaMinima;
+  tempMaxima = nuevaMaxima;
+  Serial.print("ACK,SETRANGE,");
+  Serial.print(tempMinima, 1);
+  Serial.print(',');
+  Serial.println(tempMaxima, 1);
+}
+
+void leerComandos(unsigned long ahora) {
+  while (Serial.available() > 0) {
+    char caracter = static_cast<char>(Serial.read());
+    if (caracter == '\r') {
+      continue;
+    }
+
+    if (caracter == '\n') {
+      bufferComando[indiceComando] = '\0';
+      procesarComando(bufferComando, ahora);
+      indiceComando = 0;
+    } else if (indiceComando < sizeof(bufferComando) - 1) {
+      bufferComando[indiceComando++] = caracter;
+    } else {
+      indiceComando = 0;
     }
   }
 }
 
-/**
- * Finish the pop hold after 500 ms and return the needle to its safe endpoint.
- */
-void updatePop(uint32_t now) {
-  if (popHolding && now - popStartedAt >= GLOBO_POP_HOLD_MS) {
-    popHolding = false;
-    moveServo(servos[BODY_SERVO_COUNT], 0, 250);
+void actualizarSensor(unsigned long ahora) {
+  if (!primeraLectura && ahora - ultimoSensorMs < INTERVALO_SENSOR_MS) {
+    return;
+  }
+
+  primeraLectura = false;
+  ultimoSensorMs = ahora;
+  float temperatura =
+      static_cast<float>(analogReadMilliVolts(PIN_LM35)) / 10.0f;
+
+  if (!isfinite(temperatura)) {
+    actualizarRiesgoPuntoRocio(NAN, NAN);
+    sensorValido = false;
+    if (fase == PURGA_APERTURA || fase == PURGA_VENTILACION ||
+        fase == PURGA_CIERRE) {
+      cambiarModoTermico(MODO_MANTENER);
+      DEBUG_PRINT("DEBUG,SEGURIDAD,SENSOR_INVALIDO_DURANTE_PURGA\n");
+      return;
+    }
+    modoPrueba = false;
+    cambiarFase(ERROR_SENSOR);
+    cambiarModoTermico(MODO_MANTENER);
+    escribirSalidas(false, false, false);
+    servoTapa1.write(SERVO_CERRADO);
+    servoTapa2.write(SERVO_CERRADO);
+    return;
+  }
+
+  if (temperatura < TEMPERATURA_SENSOR_MINIMA ||
+      temperatura > TEMPERATURA_SENSOR_MAXIMA) {
+    actualizarRiesgoPuntoRocio(NAN, NAN);
+    sensorValido = false;
+    if (fase == PURGA_APERTURA || fase == PURGA_VENTILACION ||
+        fase == PURGA_CIERRE) {
+      cambiarModoTermico(MODO_MANTENER);
+      DEBUG_PRINT("DEBUG,SEGURIDAD,TEMPERATURA_INVALIDA_DURANTE_PURGA\n");
+      return;
+    }
+    modoPrueba = false;
+    cambiarFase(ERROR_SENSOR);
+    cambiarModoTermico(MODO_MANTENER);
+    escribirSalidas(false, false, false);
+    servoTapa1.write(SERVO_CERRADO);
+    servoTapa2.write(SERVO_CERRADO);
+    DEBUG_PRINT("DEBUG,SEGURIDAD,TEMPERATURA_FUERA_RANGO,%.1f\n",
+                temperatura);
+    return;
+  }
+
+  humedadActual = NAN;
+  actualizarRiesgoPuntoRocio(temperatura, humedadActual);
+  temperaturaActual = temperatura;
+  sensorValido = true;
+  if (fase == ERROR_SENSOR) {
+    cambiarFase(NORMAL);
   }
 }
 
-/**
- * Configure serial ports, PIR, and servos at their initial safe positions.
- */
+void actualizarPurga(unsigned long ahora) {
+  switch (fase) {
+    case PURGA_APERTURA:
+      if (ahora - inicioFaseMs >= ESPERA_APERTURA_MS) {
+        cambiarFase(PURGA_VENTILACION);
+        inicioFaseMs = ahora;
+      }
+      break;
+    case PURGA_VENTILACION:
+      if (ahora - inicioFaseMs >= TIEMPO_VENTILACION_MS) {
+        escribirSalidas(false, false, false);
+        servoTapa1.write(SERVO_CERRADO);
+        servoTapa2.write(SERVO_CERRADO);
+        cambiarFase(PURGA_CIERRE);
+        inicioFaseMs = ahora;
+      }
+      break;
+    case PURGA_CIERRE:
+      if (ahora - inicioFaseMs >= TIEMPO_SERVO_MS) {
+        cambiarFase(NORMAL);
+        if (!cicloActivo && !controlDetenido) {
+          cambiarModoTermico(MODO_MANTENER);
+        }
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+void actualizarControlTermico() {
+  if (modoPrueba) {
+    escribirSalidas(false, false, true);
+    return;
+  }
+
+  if (!sensorValido || fase != NORMAL) {
+    escribirSalidas(false, false, fase == PURGA_VENTILACION);
+    return;
+  }
+
+  if (controlDetenido) {
+    cambiarModoTermico(MODO_MANTENER);
+    escribirSalidas(false, false, false);
+    return;
+  }
+
+  if (cicloActivo) {
+    float objetivo = objetivoCicloMaximo ? tempMaxima : tempMinima;
+    bool objetivoAlcanzado = modoCiclo == MODO_CALENTAR
+        ? temperaturaActual >= objetivo
+        : temperaturaActual <= objetivo;
+    if (objetivoAlcanzado) {
+      bool alcanzoMaxima = objetivoCicloMaximo;
+      objetivoCicloMaximo = !objetivoCicloMaximo;
+      modoCiclo = objetivoCicloMaximo ? MODO_CALENTAR : MODO_ENFRIAR;
+      purgaAutomaticaEnBajada = alcanzoMaxima;
+      if (alcanzoMaxima) {
+        iniciarPurga(millis());
+        return;
+      }
+    }
+
+    if (!objetivoCicloMaximo && modoCiclo == MODO_ENFRIAR &&
+        !purgaAutomaticaEnBajada &&
+        temperaturaActual <= tempMaxima - DIFERENCIA_PURGA_AUTOMATICA) {
+      purgaAutomaticaEnBajada = true;
+      iniciarPurga(millis());
+      return;
+    }
+    cambiarModoTermico(modoCiclo);
+  } else if (temperaturaActual <= tempMinima) {
+    cambiarModoTermico(MODO_CALENTAR);
+  } else if (temperaturaActual >= tempMaxima) {
+    cambiarModoTermico(MODO_ENFRIAR);
+  } else if (modoTermico == MODO_MANTENER) {
+    cambiarModoTermico(MODO_CALENTAR);
+  }
+
+  bool focoSolicitado = modoTermico == MODO_CALENTAR;
+  bool peltierSolicitada = modoTermico == MODO_ENFRIAR;
+  escribirSalidas(
+    focoSolicitado,
+    peltierSolicitada,
+    false
+  );
+  if ((focoSolicitado && digitalRead(PIN_FOCO) == LOW) ||
+      (peltierSolicitada && digitalRead(PIN_PELTIER) == LOW)) {
+    DEBUG_PRINT("DEBUG,CONTROL,ESPERANDO_DESCANSO\n");
+  }
+}
+
+void actualizarTimeoutComunicacion(unsigned long ahora) {
+  if (!timeoutComunicacionReportado &&
+      ahora - ultimoComandoMs >= TIMEOUT_COMUNICACION_MS) {
+    timeoutComunicacionReportado = true;
+    DEBUG_PRINT("DEBUG,COMUNICACION,TIMEOUT; conservando rango y control local\n");
+  }
+}
+
+const char *nombreFase() {
+  if (modoPrueba) return "TESTING";
+
+  switch (fase) {
+    case PURGA_APERTURA: return "PURGE_OPENING";
+    case PURGA_VENTILACION: return "PURGE_RUNNING";
+    case PURGA_CIERRE: return "PURGE_CLOSING";
+    case ERROR_SENSOR: return "SENSOR_ERROR";
+    case NORMAL:
+      if (controlDetenido) return "STOPPED";
+      if (cicloActivo) {
+        if (modoCiclo == MODO_CALENTAR) {
+          return objetivoCicloMaximo
+              ? "CYCLE_HEATING_MAX" : "CYCLE_HEATING_MIN";
+        }
+        return objetivoCicloMaximo
+            ? "CYCLE_COOLING_MAX" : "CYCLE_COOLING_MIN";
+      }
+      if (modoTermico == MODO_CALENTAR) return "HEATING";
+      if (modoTermico == MODO_ENFRIAR) return "COOLING";
+      return "HOLD";
+  }
+  return "HOLD";
+}
+
+void enviarEstado(unsigned long ahora) {
+  if (ahora - ultimoEstadoMs < INTERVALO_ESTADO_MS) {
+    return;
+  }
+  ultimoEstadoMs = ahora;
+
+  if (!sensorValido) {
+    Serial.print("STATUS,ERROR,0,0,");
+    Serial.print(digitalRead(PIN_FANS));
+    Serial.print(',');
+    Serial.print(modoPrueba ? 1 : 0);
+    Serial.print(',');
+    Serial.print(modoPrueba ? "TESTING" : "SENSOR_ERROR");
+    Serial.print(",0.0,");
+    Serial.print(tempMinima, 1);
+    Serial.print(',');
+    Serial.print(tempMaxima, 1);
+    Serial.print(',');
+    Serial.println(cicloActivo ? 1 : 0);
+    return;
+  }
+
+  Serial.print("STATUS,");
+  Serial.print(temperaturaActual, 1);
+  Serial.print(',');
+  Serial.print(digitalRead(PIN_FOCO));
+  Serial.print(',');
+  Serial.print(digitalRead(PIN_PELTIER));
+  Serial.print(',');
+  Serial.print(digitalRead(PIN_FANS));
+  Serial.print(',');
+  bool tapasAbiertas = modoPrueba || fase == PURGA_APERTURA ||
+                       fase == PURGA_VENTILACION || fase == PURGA_CIERRE;
+  Serial.print(tapasAbiertas ? 1 : 0);
+  Serial.print(',');
+  Serial.print(nombreFase());
+  Serial.print(',');
+  Serial.print(humedadActual, 1);
+  Serial.print(',');
+  Serial.print(tempMinima, 1);
+  Serial.print(',');
+  Serial.print(tempMaxima, 1);
+  Serial.print(',');
+  Serial.println(cicloActivo ? 1 : 0);
+}
+
 void setup() {
   Serial.begin(115200);
-  dfSerial.begin(DFPLAYER_BAUD, SERIAL_8N1, PIN_DF_RX, PIN_DF_TX);
-  playerReady = player.begin(dfSerial, true, false);
-  if (playerReady) {
-    player.volume(20);
-  } else {
-    Serial.println("DFPLAYER:ERROR");
-  }
 
-  for (size_t i = 0; i < SERVO_COUNT; ++i) {
-    servos[i].servo.setPeriodHertz(50);
-    servos[i].servo.attach(servos[i].pin, 500, 2500);
-    servos[i].currentAngle = (i == BODY_SERVO_COUNT) ? 0 : 90;
-    servos[i].servo.write(static_cast<int>(servos[i].currentAngle));
-  }
-  lastServoTick = millis();
-  Serial.print("ESP32:READY\n");
+  pinMode(PIN_FOCO, OUTPUT);
+  pinMode(PIN_PELTIER, OUTPUT);
+  pinMode(PIN_FANS, OUTPUT);
+  escribirSalidas(false, false, false);
+
+  servoTapa1.setPeriodHertz(50);
+  servoTapa2.setPeriodHertz(50);
+  servoTapa1.attach(PIN_SERVO_TAPA_1, 500, 2400);
+  servoTapa2.attach(PIN_SERVO_TAPA_2, 500, 2400);
+  servoTapa1.write(SERVO_CERRADO);
+  servoTapa2.write(SERVO_CERRADO);
 }
 
-/**
- * Poll inputs and update servo trajectories using millis(), never delay().
- */
 void loop() {
-  readCommands();
-  const uint32_t now = millis();
-  updatePop(now);
-  if (now - lastServoTick >= SERVO_TICK_MS) {
-    lastServoTick = now;
-    for (size_t i = 0; i < SERVO_COUNT; ++i) {
-      updateServo(servos[i], now);
-    }
-  }
+  unsigned long ahora = millis();
+  leerComandos(ahora);
+  actualizarTimeoutComunicacion(ahora);
+  actualizarLimitesDesdePotenciometros();
+  actualizarSensor(ahora);
+  actualizarPurga(ahora);
+  actualizarControlTermico();
+  enviarEstado(ahora);
 }

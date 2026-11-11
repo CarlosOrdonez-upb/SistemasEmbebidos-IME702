@@ -1,4 +1,3 @@
-#include <DHT.h>
 #include <ESP32Servo.h>
 #include <math.h>
 #include <stdlib.h>
@@ -10,7 +9,9 @@
 #define DEBUG_PRINT(...) do {} while (0)
 #endif
 
-const uint8_t DHTPIN = 4;
+const uint8_t PIN_LM35 = 34;
+const uint8_t PIN_POT_MIN = 32;
+const uint8_t PIN_POT_MAX = 33;
 const uint8_t PIN_FOCO = 5;
 const uint8_t PIN_PELTIER = 19;
 const uint8_t PIN_FANS = 18;
@@ -50,7 +51,6 @@ enum ModoTermico {
   MODO_ENFRIAR
 };
 
-DHT dht(DHTPIN, DHT11);
 Servo servoTapa1;
 Servo servoTapa2;
 
@@ -61,6 +61,8 @@ float tempMinima = 28.0f;
 float tempMaxima = 35.0f;
 float temperaturaActual = NAN;
 float humedadActual = NAN;
+float ultimaTempMinimaEnviada = NAN;
+float ultimaTempMaximaEnviada = NAN;
 bool sensorValido = false;
 bool primeraLectura = true;
 bool modoPrueba = false;
@@ -135,6 +137,14 @@ float calcularPuntoRocio(float temperatura, float humedad) {
 }
 
 void actualizarRiesgoPuntoRocio(float temperatura, float humedad) {
+  if (!isfinite(humedad)) {
+    if (riesgoPuntoRocio) {
+      Serial.println("WARN,DEWPOINT,CLEAR");
+      riesgoPuntoRocio = false;
+    }
+    return;
+  }
+
   float puntoRocio = calcularPuntoRocio(temperatura, humedad);
   bool riesgoActual = isfinite(puntoRocio) && puntoRocio >= tempMinima;
   if (riesgoActual && !riesgoPuntoRocio) {
@@ -146,6 +156,39 @@ void actualizarRiesgoPuntoRocio(float temperatura, float humedad) {
     Serial.println("WARN,DEWPOINT,CLEAR");
   }
   riesgoPuntoRocio = riesgoActual;
+}
+
+void actualizarLimitesDesdePotenciometros() {
+  float milivoltiosMin = static_cast<float>(analogReadMilliVolts(PIN_POT_MIN));
+  float milivoltiosMax = static_cast<float>(analogReadMilliVolts(PIN_POT_MAX));
+  milivoltiosMin = fminf(3300.0f, fmaxf(0.0f, milivoltiosMin));
+  milivoltiosMax = fminf(3300.0f, fmaxf(0.0f, milivoltiosMax));
+
+  float nuevaTempMinima = TEMPERATURA_CONFIG_MINIMA +
+      milivoltiosMin * (TEMPERATURA_CONFIG_MAXIMA -
+                        TEMPERATURA_CONFIG_MINIMA) / 3300.0f;
+  float nuevaTempMaxima = TEMPERATURA_CONFIG_MINIMA +
+      milivoltiosMax * (TEMPERATURA_CONFIG_MAXIMA -
+                        TEMPERATURA_CONFIG_MINIMA) / 3300.0f;
+
+  nuevaTempMinima = fminf(nuevaTempMinima,
+                          TEMPERATURA_CONFIG_MAXIMA - 2.0f);
+  nuevaTempMaxima = fmaxf(nuevaTempMaxima, nuevaTempMinima + 2.0f);
+
+  if (!isfinite(ultimaTempMinimaEnviada) ||
+      !isfinite(ultimaTempMaximaEnviada) ||
+      fabsf(nuevaTempMinima - ultimaTempMinimaEnviada) > 0.5f ||
+      fabsf(nuevaTempMaxima - ultimaTempMaximaEnviada) > 0.5f) {
+    tempMinima = nuevaTempMinima;
+    tempMaxima = nuevaTempMaxima;
+    ultimaTempMinimaEnviada = tempMinima;
+    ultimaTempMaximaEnviada = tempMaxima;
+
+    Serial.print("ACK,SETRANGE,");
+    Serial.print(tempMinima, 1);
+    Serial.print(',');
+    Serial.println(tempMaxima, 1);
+  }
 }
 
 void limitarTiempoSalidas(bool &foco, bool &peltier, unsigned long ahora) {
@@ -351,7 +394,7 @@ void procesarComando(char *comando, unsigned long ahora) {
       nuevaMinima > TEMPERATURA_CONFIG_MAXIMA ||
       nuevaMaxima < TEMPERATURA_CONFIG_MINIMA ||
       nuevaMaxima > TEMPERATURA_CONFIG_MAXIMA ||
-      nuevaMinima >= nuevaMaxima) {
+      nuevaMinima + 2.0f > nuevaMaxima) {
     Serial.println("ERR,SETRANGE,RANGE");
     return;
   }
@@ -390,10 +433,10 @@ void actualizarSensor(unsigned long ahora) {
 
   primeraLectura = false;
   ultimoSensorMs = ahora;
-  float temperatura = dht.readTemperature();
-  float humedad = dht.readHumidity();
+  float temperatura =
+      static_cast<float>(analogReadMilliVolts(PIN_LM35)) / 10.0f;
 
-  if (isnan(temperatura) || isnan(humedad)) {
+  if (!isfinite(temperatura)) {
     actualizarRiesgoPuntoRocio(NAN, NAN);
     sensorValido = false;
     if (fase == PURGA_APERTURA || fase == PURGA_VENTILACION ||
@@ -432,9 +475,9 @@ void actualizarSensor(unsigned long ahora) {
     return;
   }
 
-  actualizarRiesgoPuntoRocio(temperatura, humedad);
+  humedadActual = NAN;
+  actualizarRiesgoPuntoRocio(temperatura, humedadActual);
   temperaturaActual = temperatura;
-  humedadActual = humedad;
   sensorValido = true;
   if (fase == ERROR_SENSOR) {
     cambiarFase(NORMAL);
@@ -614,7 +657,6 @@ void enviarEstado(unsigned long ahora) {
 
 void setup() {
   Serial.begin(115200);
-  dht.begin();
 
   pinMode(PIN_FOCO, OUTPUT);
   pinMode(PIN_PELTIER, OUTPUT);
@@ -633,6 +675,7 @@ void loop() {
   unsigned long ahora = millis();
   leerComandos(ahora);
   actualizarTimeoutComunicacion(ahora);
+  actualizarLimitesDesdePotenciometros();
   actualizarSensor(ahora);
   actualizarPurga(ahora);
   actualizarControlTermico();

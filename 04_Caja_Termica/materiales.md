@@ -5,7 +5,8 @@
 | Cantidad | Componente | Especificaciones / Función |
 | :---: | :--- | :--- |
 | 1 | **Microcontrolador** | ESP32 DevKit V1 (Cerebro del sistema). |
-| 1 | **Sensor Ambiental** | DHT11 (Medición de temperatura y humedad ambiente). |
+| 1 | **Sensor de Temperatura** | LM35 conectado al GPIO 34 (ADC1); mide temperatura, no humedad. |
+| 2 | **Potenciómetros** | Ajuste de límites mínimo y máximo de temperatura (GPIO 32 y 33). |
 | 1 | **Kit Celda Peltier** | Incluye celda, disipadores de calor y ventiladores dedicados para enfriamiento. |
 | 1 | **Foco Incandescente** | 60W con su respectivo Socket (Para calentamiento rápido). |
 | 2 | **Ventiladores 12V** | Para circulación de aire y apoyo en el proceso de purga. |
@@ -23,4 +24,5 @@
 
 ## ⚙️ Lógica del Sistema
 - **Control por Histéresis:** Evita el ciclado excesivo del foco y el Peltier.
-- **Purga Automática:** Si el *setpoint* cambia drásticamente (≥ 2.5°C), el sistema abre las tapas con los servos y activa los ventiladores para ventilar el aire estancado antes de volver a sellar y estabilizar. Esto evita condensacion del aire y esta determinado por la humedad que detecte el sensor DHT11
+- **Límites de temperatura:** Los potenciómetros ajustan el rango entre 20 y 60 °C; el firmware mantiene una diferencia mínima de 2 °C.
+- **Purga Automática:** Durante el ciclo térmico, se activa al alcanzar el límite máximo o al enfriar 2.5 °C por debajo de ese límite. La humedad y el punto de rocío no se miden con el LM35.

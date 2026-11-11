@@ -18,7 +18,7 @@ El firmware implementa un control robusto basado en tres pilares fundamentales:
    - Activa los ventiladores de extracción para renovar el aire estancado.
    - Cierra las tapas al terminar los 20 segundos de extracción y reanuda el ciclo térmico.
 3. **Protecciones de seguridad:**
-   Una lectura del DHT11 menor de 10 °C o mayor de 60 °C, o un error del sensor, apaga foco, Peltier y ventiladores, cierra las tapas y reporta `STATUS,ERROR`. Se reanuda automáticamente cuando vuelve una lectura válida. El riesgo de condensación se estima con el punto de rocío y la temperatura mínima configurada, usada como aproximación de la superficie fría porque no hay un sensor de superficie.
+   Una lectura del LM35 menor de 10 °C o mayor de 60 °C apaga foco, Peltier y ventiladores, cierra las tapas y reporta `STATUS,ERROR`. Se reanuda automáticamente cuando vuelve una lectura válida. Como el LM35 no mide humedad, el estado transmite `nan` en ese campo y se desactivan las alertas de punto de rocío.
    El foco tiene un máximo de 10 minutos continuos seguido de 1 minuto de descanso; la Peltier tiene un máximo de 15 minutos seguido de 2 minutos de descanso. Si se pierden comandos seriales durante 30 segundos, se conserva el rango configurado y el control térmico autónomo sigue funcionando.
    Los mensajes detallados de cambios de fase, decisiones de control y protecciones se habilitan compilando con `DEBUG_MODE` definido.
 
@@ -28,7 +28,9 @@ El firmware implementa un control robusto basado en tres pilares fundamentales:
 
 | Componente | Pin ESP32 | Función / Nota |
 | :--- | :---: | :--- |
-| **Sensor DHT11** | GPIO 4 | Lectura de temperatura y humedad ambiente. |
+| **Sensor LM35** | GPIO 34 | Lectura de temperatura; conectar la salida analógica al ADC1. |
+| **Potenciómetro mínimo** | GPIO 32 | Ajuste del límite inferior entre 20 y 60 °C. |
+| **Potenciómetro máximo** | GPIO 33 | Ajuste del límite superior entre 20 y 60 °C. |
 | **Foco 60W** | GPIO 5 | Controlado vía Relé/Mosfet para calentamiento. |
 | **Módulo Peltier** | GPIO 19 | Controlado vía Mosfet IRFZ44N para enfriamiento. |
 | **Ventiladores 12V** | GPIO 18 | Circulación de aire y apoyo en la purga. |
@@ -36,6 +38,8 @@ El firmware implementa un control robusto basado en tres pilares fundamentales:
 | **Servo Tapa 2** | GPIO 23 | Apertura de compuerta de ventilación derecha. |
 
 > ⚠️ **Nota de Seguridad:** El foco y el módulo Peltier nunca se activan simultáneamente en el firmware (`escribirSalidas`) para evitar cortocircuitos o daños a la fuente de alimentación.
+>
+> Conecta los potenciómetros entre 3.3 V y GND, con el cursor a su pin ADC. El firmware mantiene los límites dentro de 20–60 °C y garantiza al menos 2 °C de diferencia.
 
 ---
 
@@ -49,8 +53,8 @@ Se desarrolló una aplicación de escritorio en Python utilizando **PyQt5** que 
 - **Cambio de Ambiente:** El color de fondo de la cámara cambia gradualmente (gradiente) reflejando la temperatura actual.
 - **Ciclo térmico:** Permite elegir el primer límite, muestra avisos si la temperatura está fuera del rango y ofrece **Detener todo**.
 - **Purga:** Se activa automáticamente al alcanzar la máxima, antes de iniciar el enfriamiento, y puede solicitarse manualmente; al concluir, el ciclo continúa.
-- **Aviso de condensación:** Muestra una recomendación cuando el punto de rocío alcanza la temperatura mínima configurada; no inicia una purga por sí solo.
-- **Comunicación Serial:** Selecciona el puerto COM del ESP32 y pulsa **Conectar** (115200 baudios); la aplicación no se conecta ni inicia el control térmico automáticamente. Envía el `SETRANGE` al ajustar los límites y recibe el `STATUS` cada 500 ms. El firmware debe ser compatible con el protocolo de ciclo para habilitar los botones de inicio y detención.
+- **Aviso de condensación:** No disponible con el LM35, porque este sensor no mide humedad.
+- **Comunicación Serial:** Selecciona el puerto COM del ESP32 y pulsa **Conectar** (115200 baudios); la aplicación no inicia el control térmico automáticamente. Recibe `ACK,SETRANGE` al mover los potenciómetros y `STATUS` cada 500 ms. El firmware debe ser compatible con el protocolo de ciclo para habilitar los botones de inicio y detención.
 
 ##  Ver simulación
   ![Simulacion](sources/caja1.gif)
@@ -65,14 +69,14 @@ La interfaz y el ESP32 se comunican mediante texto plano estructurado:
 
 | Dirección | Comando / Formato | Descripción |
 | :--- | :--- | :--- |
-| **PC → ESP32** | `SETRANGE,28.0,35.0` | Establece los límites de temperatura (ambos entre 20.0 y 60.0 °C, con mínimo menor que máximo). |
+| **PC → ESP32** | `SETRANGE,28.0,35.0` | Establece los límites de temperatura (ambos entre 20.0 y 60.0 °C y separados por al menos 2.0 °C). |
 | **PC → ESP32** | `CYCLE,MIN` / `CYCLE,MAX` | Inicia el ciclo con el límite indicado como primera meta. |
 | **PC → ESP32** | `STOP` | Detiene el ciclo y apaga foco, Peltier, ventiladores y compuertas. |
 | **PC → ESP32** | `PURGE` | Solicita manualmente una purga; pausa el control térmico y lo reanuda al terminar. |
 | **ESP32 → PC** | `STATUS,temp,foco,peltier,fans,tapas,FASE,humedad,tempMin,tempMax,cicloActivo` | Telemetría y estado del ciclo; las fases `CYCLE_*` indican dirección y límite objetivo. |
 | **ESP32 → PC** | `STATUS,ERROR,0,0,0,0,SENSOR_ERROR,0.0,28.0,35.0,cicloActivo` | Alerta crítica por fallo de sensor, incluyendo el rango y estado del ciclo. |
-| **ESP32 → PC** | `WARN,DEWPOINT,RISK,puntoRocio,tempMin` | Riesgo estimado de condensación; la interfaz presenta la recomendación sin activar la purga. |
-| **ESP32 → PC** | `WARN,DEWPOINT,CLEAR` | El punto de rocío volvió a estar por debajo de la temperatura mínima configurada. |
+| **ESP32 → PC** | `ACK,SETRANGE,tempMin,tempMax` | Actualización inmediata de los límites leídos de los potenciómetros. |
+| **ESP32 → PC** | `WARN,DEWPOINT,RISK,puntoRocio,tempMin` / `WARN,DEWPOINT,CLEAR` | Formatos reservados; no se emiten con el LM35, que no mide humedad. |
 
 ---
 
@@ -80,7 +84,7 @@ La interfaz y el ESP32 se comunican mediante texto plano estructurado:
 
 ### 1. Cargar el Firmware
 - Abre `codigo/ESP32CodeTemperatura.ino` en Arduino IDE.
-- Asegúrate de tener instaladas las librerías: `DHT sensor library` (by Adafruit) y `ESP32Servo`.
+- Asegúrate de tener instalada la librería `ESP32Servo`.
 - Selecciona la placa "ESP32 Dev Module" y carga el código.
 
 ### 2. Ejecutar la Interfaz Gráfica
