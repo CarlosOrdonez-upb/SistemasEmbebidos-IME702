@@ -6,13 +6,15 @@ import sys
 import time
 from collections import deque
 from datetime import datetime
+from statistics import median
+from typing import cast
 
+import numpy as np
 import pyqtgraph as pg
 import serial
 from serial.tools import list_ports
-from PyQt6.QtCore import QPropertyAnimation, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtCore import pyqtProperty  # type: ignore[reportAttributeAccessIssue]
-from PyQt6.QtGui import QFont, QPainter
+from PyQt6.QtCore import QThread, QTimer, Qt, pyqtSignal
+from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -26,6 +28,11 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+
+try:
+    from scipy import signal as scipy_signal
+except ImportError:
+    scipy_signal = None
 
 
 class SerialReader(QThread):
@@ -83,8 +90,135 @@ class SerialReader(QThread):
             self.connection_changed.emit(False)
 
 
+def butterworth_coefficients(
+    cutoff_hz: float, sampling_frequency_hz: float, filter_type: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Diseña un biquad Butterworth usando SciPy o las ecuaciones bilineales."""
+    if scipy_signal is not None:
+        coefficients = cast(
+            tuple[np.ndarray, np.ndarray],
+            scipy_signal.butter(
+                2, cutoff_hz, btype=filter_type, fs=sampling_frequency_hz, output="ba"
+            ),
+        )
+        numerator, denominator = coefficients
+        return np.asarray(numerator, dtype=float), np.asarray(denominator, dtype=float)
+
+    # Aproximación Butterworth de segundo orden (Q = 1/sqrt(2)).
+    omega = 2.0 * np.pi * cutoff_hz / sampling_frequency_hz
+    cosine = np.cos(omega)
+    alpha = np.sin(omega) / (2.0 * (1.0 / np.sqrt(2.0)))
+    if filter_type == "highpass":
+        numerator = np.array(
+            [(1.0 + cosine) / 2.0, -(1.0 + cosine), (1.0 + cosine) / 2.0]
+        )
+    else:
+        numerator = np.array(
+            [(1.0 - cosine) / 2.0, 1.0 - cosine, (1.0 - cosine) / 2.0]
+        )
+    denominator = np.array([1.0 + alpha, -2.0 * cosine, 1.0 - alpha])
+    return numerator / denominator[0], denominator / denominator[0]
+
+
+class ECGSignalFilter:
+    """Filtro pasa-banda en tiempo real con frecuencia medida en las muestras."""
+
+    def __init__(self) -> None:
+        self.sample_intervals = deque(maxlen=101)
+        self.previous_timestamp: float | None = None
+        self.sampling_frequency: float | None = None
+        self._configured_frequency: float | None = None
+        self._samples_since_design = 0
+        self._highpass_coefficients = None
+        self._lowpass_coefficients = None
+        self._highpass_state = np.zeros(2, dtype=float)
+        self._lowpass_state = np.zeros(2, dtype=float)
+
+    def add_sample(self, value: float, timestamp: float) -> float | None:
+        if self.previous_timestamp is not None:
+            interval = timestamp - self.previous_timestamp
+            if interval > 0 and math.isfinite(interval):
+                self.sample_intervals.append(interval)
+                if len(self.sample_intervals) >= 5:
+                    self.sampling_frequency = 1.0 / median(self.sample_intervals)
+        self.previous_timestamp = timestamp
+
+        sampling_frequency = self.sampling_frequency
+        if sampling_frequency is None or sampling_frequency <= 80.0:
+            return None
+
+        self._samples_since_design += 1
+        needs_design = self._configured_frequency is None
+        if self._configured_frequency is not None:
+            relative_change = abs(
+                sampling_frequency - self._configured_frequency
+            ) / self._configured_frequency
+            needs_design = relative_change >= 0.02 and self._samples_since_design >= 25
+        if needs_design:
+            self._configure(sampling_frequency, value)
+
+        if self._highpass_coefficients is None or self._lowpass_coefficients is None:
+            return None
+        highpass, self._highpass_state = self._filter_stage(
+            value, self._highpass_coefficients, self._highpass_state
+        )
+        lowpass, self._lowpass_state = self._filter_stage(
+            highpass, self._lowpass_coefficients, self._lowpass_state
+        )
+        return lowpass
+
+    def _configure(self, sampling_frequency: float, initial_value: float) -> None:
+        self._highpass_coefficients = butterworth_coefficients(
+            0.5, sampling_frequency, "highpass"
+        )
+        self._lowpass_coefficients = butterworth_coefficients(
+            40.0, sampling_frequency, "lowpass"
+        )
+        self._configured_frequency = sampling_frequency
+        self._samples_since_design = 0
+
+        if scipy_signal is not None:
+            high_b, high_a = self._highpass_coefficients
+            low_b, low_a = self._lowpass_coefficients
+            self._highpass_state = scipy_signal.lfilter_zi(high_b, high_a) * initial_value
+            self._lowpass_state = scipy_signal.lfilter_zi(low_b, low_a) * 0.0
+        else:
+            high_b, high_a = self._highpass_coefficients
+            low_b, low_a = self._lowpass_coefficients
+            high_gain = np.sum(high_b) / np.sum(high_a)
+            self._highpass_state = np.array(
+                [
+                    high_gain - high_b[0],
+                    high_b[2] - high_a[2] * high_gain,
+                ],
+                dtype=float,
+            ) * initial_value
+            self._lowpass_state = np.zeros(2, dtype=float)
+
+    @staticmethod
+    def _filter_stage(value, coefficients, state):
+        numerator, denominator = coefficients
+        if scipy_signal is not None:
+            output, final_state = scipy_signal.lfilter(
+                numerator, denominator, np.asarray([value]), zi=state
+            )
+            return float(output[0]), final_state
+
+        output = numerator[0] * value + state[0]
+        next_state = np.array(
+            [
+                numerator[1] * value - denominator[1] * output + state[1],
+                numerator[2] * value - denominator[2] * output,
+            ],
+            dtype=float,
+        )
+        return float(output), next_state
+
+
 class ECGPeakDetector:
     """Detecta máximos con umbral adaptativo y período refractario."""
+
+    INTERVAL_HISTORY = 8
 
     def __init__(self) -> None:
         self.baseline: float | None = None
@@ -93,8 +227,8 @@ class ECGPeakDetector:
         self.previous_timestamp: float | None = None
         self.before_previous_value: float | None = None
         self.last_peak_timestamp: float | None = None
-        self.peak_amplitude = 40.0
-        self.intervals = deque(maxlen=5)
+        self.peak_amplitude = 60.0
+        self.intervals = deque(maxlen=self.INTERVAL_HISTORY)
 
     def add_sample(self, value: float, timestamp: float) -> int | None:
         baseline = self.baseline
@@ -116,10 +250,9 @@ class ECGPeakDetector:
         alpha = 1.0 - math.exp(-elapsed / 1.5)
         baseline += alpha * (value - baseline)
         self.baseline = baseline
-        threshold = max(15.0, self.peak_amplitude * 0.45)
+        threshold = max(60.0, self.peak_amplitude * 0.45)
 
         bpm = None
-        peak_detected = False
         if (
             previous_value is not None
             and before_previous_value is not None
@@ -129,84 +262,34 @@ class ECGPeakDetector:
             and previous_value - baseline >= threshold
             and (
                 last_peak_timestamp is None
-                or previous_timestamp - last_peak_timestamp >= 0.3
+                or previous_timestamp - last_peak_timestamp >= 0.4
             )
         ):
-            peak_detected = True
             amplitude = previous_value - baseline
-            self.peak_amplitude = 0.8 * self.peak_amplitude + 0.2 * amplitude
 
             if last_peak_timestamp is not None:
                 interval = previous_timestamp - last_peak_timestamp
                 if interval > 0:
-                    self.intervals.append(interval)
-                    bpm = round(60.0 / (sum(self.intervals) / len(self.intervals)))
-
-            self.last_peak_timestamp = previous_timestamp
+                    candidate_intervals = list(self.intervals)
+                    candidate_intervals.append(interval)
+                    if len(candidate_intervals) > self.INTERVAL_HISTORY:
+                        candidate_intervals = candidate_intervals[-self.INTERVAL_HISTORY :]
+                    candidate_bpm = 60.0 / median(candidate_intervals)
+                    if 30.0 <= candidate_bpm <= 220.0:
+                        self.intervals.append(interval)
+                        if len(self.intervals) >= 3:
+                            bpm = round(60.0 / median(self.intervals))
+                self.last_peak_timestamp = previous_timestamp
+                self.peak_amplitude = 0.8 * self.peak_amplitude + 0.2 * amplitude
+            else:
+                self.peak_amplitude = 0.8 * self.peak_amplitude + 0.2 * amplitude
+                self.last_peak_timestamp = previous_timestamp
 
         self.before_previous_value = previous_value
         self.previous_value = value
         self.previous_timestamp = timestamp
         self.last_timestamp = timestamp
-        return bpm if peak_detected else None
-
-
-class PulseLabel(QLabel):
-    """Etiqueta BPM cuyo tamaño puede animarse mediante QPropertyAnimation."""
-
-    def __init__(self, text: str, point_size: float, parent=None) -> None:
-        super().__init__(text, parent)
-        self._point_size = point_size
-        self._pulse_scale = 1.0
-        self._pulse_animation: QPropertyAnimation | None = None
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setMinimumHeight(115)
-        self._apply_font()
-
-    def _apply_font(self) -> None:
-        font = QFont("Segoe UI", QFont.Weight.Bold)
-        font.setPointSizeF(self._point_size * self._pulse_scale)
-        self.setFont(font)
-
-    def get_pulse_scale(self) -> float:
-        return self._pulse_scale
-
-    def set_pulse_scale(self, scale: float) -> None:
-        self._pulse_scale = scale
-        self._apply_font()
-
-    pulseScale = pyqtProperty(float, get_pulse_scale, set_pulse_scale)
-
-
-class HeartWidget(QWidget):
-    """Dibuja un corazón que se agranda brevemente en cada latido."""
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._pulse_scale = 1.0
-        self._pulse_animation: QPropertyAnimation | None = None
-        self.setMinimumSize(90, 90)
-
-    def get_pulse_scale(self) -> float:
-        return self._pulse_scale
-
-    def set_pulse_scale(self, scale: float) -> None:
-        self._pulse_scale = scale
-        self.update()
-
-    pulseScale = pyqtProperty(float, get_pulse_scale, set_pulse_scale)
-
-    def paintEvent(self, event) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.translate(self.width() / 2, self.height() / 2)
-        painter.scale(self._pulse_scale, self._pulse_scale)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(Qt.GlobalColor.red)
-        font = QFont("Segoe UI Symbol", 48, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(-40, 35, "♥")
+        return bpm
 
 
 class MainWindow(QMainWindow):
@@ -226,6 +309,7 @@ class MainWindow(QMainWindow):
         self.raw_values = deque(maxlen=self.HISTORY_SIZE)
         self.plot_values = deque(maxlen=self.HISTORY_SIZE)
         self.smoothing_values = deque(maxlen=5)
+        self.signal_filter = ECGSignalFilter()
         self.peak_detector = ECGPeakDetector()
 
         self._build_ui()
@@ -276,41 +360,41 @@ class MainWindow(QMainWindow):
         status_row.addWidget(self.leads_label)
         layout.addLayout(status_row)
 
-        bpm_row = QHBoxLayout()
-        bpm_row.addStretch()
         bpm_column = QVBoxLayout()
         bpm_caption = QLabel("FRECUENCIA CARDÍACA")
         bpm_caption.setObjectName("mutedLabel")
         bpm_caption.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.bpm_label = PulseLabel("--", 72)
+        self.bpm_label = QLabel("--")
         self.bpm_label.setObjectName("bpmLabel")
+        bpm_font = QFont("Segoe UI", QFont.Weight.Bold)
+        bpm_font.setPointSize(72)
+        self.bpm_label.setFont(bpm_font)
+        self.bpm_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.bpm_label.setMinimumHeight(115)
         unit = QLabel("BPM")
         unit.setObjectName("mutedLabel")
         unit.setAlignment(Qt.AlignmentFlag.AlignCenter)
         bpm_column.addWidget(bpm_caption)
         bpm_column.addWidget(self.bpm_label)
         bpm_column.addWidget(unit)
-        bpm_row.addLayout(bpm_column)
-        heart_column = QVBoxLayout()
-        heart_column.addStretch()
-        self.heart_widget = HeartWidget()
-        heart_column.addWidget(self.heart_widget)
-        heart_column.addStretch()
-        bpm_row.addLayout(heart_column)
-        bpm_row.addStretch()
-        layout.addLayout(bpm_row)
+        layout.addLayout(bpm_column)
 
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground("#0a0a0a")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
         self.plot_widget.setLabel("left", "Señal", units="ADC")
         self.plot_widget.setLabel("bottom", "Muestras recientes")
-        self.plot_widget.setYRange(0, 4095)
         self.plot_widget.setXRange(0, self.HISTORY_SIZE - 1)
         plot_item = self.plot_widget.getPlotItem()
         if plot_item is not None:
             plot_item.setMenuEnabled(False)
             plot_item.hideButtons()
+            view_box = plot_item.getViewBox()
+            view_box.enableAutoRange(axis=1, enable=True)
+            for axis_name in ("left", "bottom"):
+                axis = plot_item.getAxis(axis_name)
+                axis.setPen(pg.mkPen("#777777"))
+                axis.setTextPen(pg.mkPen("#aaaaaa"))
         self.curve = self.plot_widget.plot(pen=pg.mkPen("#00ff66", width=2))
         layout.addWidget(self.plot_widget, stretch=1)
 
@@ -384,6 +468,10 @@ class MainWindow(QMainWindow):
 
         self.message_label.clear()
         self._set_leads_state("DESCONOCIDO")
+        self.signal_filter = ECGSignalFilter()
+        self.peak_detector = ECGPeakDetector()
+        self.smoothing_values.clear()
+        self.bpm_label.setText("--")
         self.connect_button.setEnabled(False)
         self.connect_button.setText("Conectando…")
         self.connection_label.setText(f"Conectando a {port}…")
@@ -437,16 +525,17 @@ class MainWindow(QMainWindow):
     def process_samples(self, samples: list[tuple[int, float]]) -> None:
         for raw_value, timestamp in samples:
             self.raw_values.append(raw_value)
-            plotted_value = raw_value
+            detector_input = raw_value
             if self.smoothing_checkbox.isChecked():
                 self.smoothing_values.append(raw_value)
-                plotted_value = sum(self.smoothing_values) / len(self.smoothing_values)
+                detector_input = sum(self.smoothing_values) / len(self.smoothing_values)
 
-            self.plot_values.append(plotted_value)
-            bpm = self.peak_detector.add_sample(plotted_value, timestamp)
-            if bpm is not None:
-                self.bpm_label.setText(str(bpm))
-                self._animate_beat()
+            self.plot_values.append(raw_value)
+            filtered_value = self.signal_filter.add_sample(detector_input, timestamp)
+            if filtered_value is not None:
+                bpm = self.peak_detector.add_sample(filtered_value, timestamp)
+                if bpm is not None:
+                    self.bpm_label.setText(str(bpm))
 
             if self.csv_writer is not None:
                 try:
@@ -458,19 +547,6 @@ class MainWindow(QMainWindow):
                     self._show_error(f"No se pudo escribir el CSV: {exc}")
 
         self.curve.setData(list(self.plot_values))
-
-    def _animate_beat(self) -> None:
-        for widget, duration in ((self.bpm_label, 220), (self.heart_widget, 420)):
-            animation = widget._pulse_animation
-            if animation is None:
-                animation = QPropertyAnimation(widget, b"pulseScale", self)
-                animation.setDuration(duration)
-                animation.setKeyValueAt(0.0, 1.0)
-                animation.setKeyValueAt(0.35, 1.3)
-                animation.setKeyValueAt(1.0, 1.0)
-                widget._pulse_animation = animation
-            animation.stop()
-            animation.start()
 
     def toggle_csv_recording(self) -> None:
         if self.csv_writer is not None:
