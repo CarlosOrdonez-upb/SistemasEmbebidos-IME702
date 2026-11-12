@@ -12,7 +12,7 @@ Aplicación de escritorio para la adquisición, visualización y análisis de se
 - Exportación de muestras ADC crudas y estado de electrodos a CSV.
 - Filtros digitales pasa-altas y pasa-bajas para reducir la deriva de línea base y el ruido de alta frecuencia. SciPy habilita además la selección opcional de notch de 50/60 Hz; sin SciPy se usa el filtro IIR alternativo para el pasa-banda.
 - Lectura serial en un hilo separado para mantener la interfaz receptiva.
-![alt text](./sources/image.png)
+
 > El firmware aplica una espera de 4 ms por ciclo. El tiempo de transmisión serial también influye en la frecuencia efectiva; la aplicación estima la frecuencia de muestreo a partir de las marcas de tiempo recibidas.
 
 ## Stack tecnológico
@@ -89,15 +89,8 @@ El puerto inicial es **COM3**; puedes seleccionar otro puerto desde la ventana. 
 
 Vista general de la aplicación con la señal ECG, frecuencia cardíaca, amplitud y estado de los electrodos.
 
-![Diagrama de Conexiones](images/diagrama_conexiones.png)
+![Diagrama de Conexiones](images/vistas.png)
 
 Diagrama de cableado entre el módulo AD8232 y los pines del ESP32.
 
-![Detección de Picos](images/deteccion_picos.png)
-
-Detalle de la señal ECG donde se aprecian los picos detectados y el cálculo de BPM.
-
-## Autor y licencia
-
-- **Autor:** Carlos Ordonez (Estudiante de Mecatrónica).
-- **Licencia:** MIT.
+![Diagrama de Conexiones](images/diagrama_conexiones.png)
