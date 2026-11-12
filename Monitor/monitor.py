@@ -131,8 +131,18 @@ class ECGSignalFilter:
         self._samples_since_design = 0
         self._highpass_coefficients = None
         self._lowpass_coefficients = None
+        self.notch_frequency: float | None = None
+        self._configured_notch_frequency: float | None = None
+        self._notch_coefficients = None
         self._highpass_state = np.zeros(2, dtype=float)
+        self._notch_state = np.zeros(2, dtype=float)
         self._lowpass_state = np.zeros(2, dtype=float)
+
+    def set_notch_frequency(self, frequency: float | None) -> None:
+        if frequency not in (None, 50.0, 60.0):
+            raise ValueError("La frecuencia notch debe ser None, 50 o 60 Hz.")
+        self.notch_frequency = frequency if scipy_signal is not None else None
+        self._configured_notch_frequency = None
 
     def add_sample(self, value: float, timestamp: float) -> float | None:
         if self.previous_timestamp is not None:
@@ -162,6 +172,27 @@ class ECGSignalFilter:
         highpass, self._highpass_state = self._filter_stage(
             value, self._highpass_coefficients, self._highpass_state
         )
+        if (
+            scipy_signal is not None
+            and self.notch_frequency is not None
+            and self.notch_frequency < sampling_frequency / 2.0
+        ):
+            if self._configured_notch_frequency != self.notch_frequency:
+                notch_coefficients = cast(
+                    tuple[np.ndarray, np.ndarray],
+                    scipy_signal.iirnotch(
+                        self.notch_frequency, 30.0, fs=sampling_frequency
+                    ),
+                )
+                self._notch_coefficients = notch_coefficients
+                self._notch_state = (
+                    scipy_signal.lfilter_zi(*notch_coefficients) * highpass
+                )
+                self._configured_notch_frequency = self.notch_frequency
+            if self._notch_coefficients is not None:
+                highpass, self._notch_state = self._filter_stage(
+                    highpass, self._notch_coefficients, self._notch_state
+                )
         lowpass, self._lowpass_state = self._filter_stage(
             highpass, self._lowpass_coefficients, self._lowpass_state
         )
@@ -176,6 +207,9 @@ class ECGSignalFilter:
         )
         self._configured_frequency = sampling_frequency
         self._samples_since_design = 0
+        self._configured_notch_frequency = None
+        self._notch_coefficients = None
+        self._notch_state = np.zeros(2, dtype=float)
 
         if scipy_signal is not None:
             high_b, high_a = self._highpass_coefficients
@@ -216,79 +250,88 @@ class ECGSignalFilter:
 
 
 class ECGPeakDetector:
-    """Detecta máximos con umbral adaptativo y período refractario."""
+    """Detecta máximos usando amplitud, ruido y rango recientes de la señal."""
 
     INTERVAL_HISTORY = 8
+    SAMPLE_WINDOW = 400
+    MIN_VALID_SAMPLES = 50
 
     def __init__(self) -> None:
-        self.baseline: float | None = None
-        self.last_timestamp: float | None = None
+        self.samples = deque(maxlen=self.SAMPLE_WINDOW)
         self.previous_value: float | None = None
         self.previous_timestamp: float | None = None
         self.before_previous_value: float | None = None
         self.last_peak_timestamp: float | None = None
-        self.peak_amplitude = 60.0
         self.intervals = deque(maxlen=self.INTERVAL_HISTORY)
+        self.signal_range = 0.0
+        self.signal_std = 0.0
+        self.signal_too_weak = True
+        self.invalid_beat = False
 
     def add_sample(self, value: float, timestamp: float) -> int | None:
-        baseline = self.baseline
-        last_timestamp = self.last_timestamp
-        if baseline is None or last_timestamp is None:
-            self.baseline = value
-            self.last_timestamp = timestamp
-            self.before_previous_value = value
-            self.previous_value = value
-            self.previous_timestamp = timestamp
+        self.invalid_beat = False
+        if not math.isfinite(value):
             return None
+        self.samples.append(float(value))
+        window = np.asarray(self.samples, dtype=float)
+        if window.size:
+            minimum = float(np.min(window))
+            maximum = float(np.max(window))
+            self.signal_range = maximum - minimum
+            self.signal_std = float(np.std(window))
+        else:
+            self.signal_range = 0.0
+            self.signal_std = 0.0
 
+        self.signal_too_weak = (
+            len(self.samples) < self.MIN_VALID_SAMPLES or self.signal_range < 3.0
+        )
         previous_value = self.previous_value
         before_previous_value = self.before_previous_value
         previous_timestamp = self.previous_timestamp
         last_peak_timestamp = self.last_peak_timestamp
-        elapsed = max(0.0, timestamp - last_timestamp)
-        # La línea base sigue lentamente el cambio de offset de la señal.
-        alpha = 1.0 - math.exp(-elapsed / 1.5)
-        baseline += alpha * (value - baseline)
-        self.baseline = baseline
-        threshold = max(60.0, self.peak_amplitude * 0.45)
-
         bpm = None
-        if (
+        is_local_maximum = (
             previous_value is not None
             and before_previous_value is not None
             and previous_timestamp is not None
             and previous_value > before_previous_value
             and previous_value >= value
-            and previous_value - baseline >= threshold
-            and (
-                last_peak_timestamp is None
-                or previous_timestamp - last_peak_timestamp >= 0.4
-            )
-        ):
-            amplitude = previous_value - baseline
+        )
 
-            if last_peak_timestamp is not None:
-                interval = previous_timestamp - last_peak_timestamp
-                if interval > 0:
+        if not self.signal_too_weak and is_local_maximum and previous_value is not None:
+            threshold = max(
+                0.5 * self.signal_std,
+                0.3 * self.signal_range,
+                1.5,
+            )
+            window_center = float(np.median(window))
+            if (
+                previous_value - window_center >= threshold
+                and previous_timestamp is not None
+                and (
+                    last_peak_timestamp is None
+                    or previous_timestamp - last_peak_timestamp >= 0.4
+                )
+            ):
+                if last_peak_timestamp is not None:
+                    interval = previous_timestamp - last_peak_timestamp
                     candidate_intervals = list(self.intervals)
                     candidate_intervals.append(interval)
                     if len(candidate_intervals) > self.INTERVAL_HISTORY:
                         candidate_intervals = candidate_intervals[-self.INTERVAL_HISTORY :]
                     candidate_bpm = 60.0 / median(candidate_intervals)
-                    if 30.0 <= candidate_bpm <= 220.0:
+                    if 40.0 <= candidate_bpm <= 200.0:
                         self.intervals.append(interval)
                         if len(self.intervals) >= 3:
                             bpm = round(60.0 / median(self.intervals))
-                self.last_peak_timestamp = previous_timestamp
-                self.peak_amplitude = 0.8 * self.peak_amplitude + 0.2 * amplitude
-            else:
-                self.peak_amplitude = 0.8 * self.peak_amplitude + 0.2 * amplitude
+                    else:
+                        self.invalid_beat = True
                 self.last_peak_timestamp = previous_timestamp
 
         self.before_previous_value = previous_value
         self.previous_value = value
         self.previous_timestamp = timestamp
-        self.last_timestamp = timestamp
         return bpm
 
 
@@ -306,8 +349,10 @@ class MainWindow(QMainWindow):
         self.leads_state = "DESCONOCIDO"
         self.csv_file = None
         self.csv_writer = None
+        self.window_seconds = 5.0
+        self.plot_start_timestamp: float | None = None
         self.raw_values = deque(maxlen=self.HISTORY_SIZE)
-        self.plot_values = deque(maxlen=self.HISTORY_SIZE)
+        self.plot_values: deque[tuple[float, int]] = deque()
         self.smoothing_values = deque(maxlen=5)
         self.signal_filter = ECGSignalFilter()
         self.peak_detector = ECGPeakDetector()
@@ -343,6 +388,25 @@ class MainWindow(QMainWindow):
         refresh_button.clicked.connect(self.refresh_ports)
         header.addWidget(refresh_button)
 
+        header.addWidget(QLabel("Ventana"))
+        self.window_selector = QComboBox()
+        for seconds in (2.0, 5.0, 10.0, 20.0):
+            self.window_selector.addItem(f"{int(seconds)} s", seconds)
+        self.window_selector.setCurrentIndex(1)
+        self.window_selector.currentIndexChanged.connect(self._window_changed)
+        header.addWidget(self.window_selector)
+
+        header.addWidget(QLabel("Notch"))
+        self.notch_selector = QComboBox()
+        self.notch_selector.addItem("Off", None)
+        self.notch_selector.addItem("50 Hz", 50.0)
+        self.notch_selector.addItem("60 Hz", 60.0)
+        self.notch_selector.setEnabled(scipy_signal is not None)
+        if scipy_signal is None:
+            self.notch_selector.setToolTip("Requiere SciPy")
+        self.notch_selector.currentIndexChanged.connect(self._notch_changed)
+        header.addWidget(self.notch_selector)
+
         self.connect_button = QPushButton("Conectar")
         self.connect_button.setObjectName("connectButton")
         self.connect_button.clicked.connect(self.toggle_connection)
@@ -354,10 +418,21 @@ class MainWindow(QMainWindow):
         self.connection_label.setObjectName("mutedLabel")
         status_row.addWidget(self.connection_label)
         status_row.addStretch()
-        status_row.addWidget(QLabel("Electrodos:"))
+
+        signal_status_column = QVBoxLayout()
+        leads_row = QHBoxLayout()
+        leads_row.addWidget(QLabel("Electrodos:"))
         self.leads_label = QLabel("DESCONOCIDO")
         self.leads_label.setObjectName("leadsUnknown")
-        status_row.addWidget(self.leads_label)
+        leads_row.addWidget(self.leads_label)
+        signal_status_column.addLayout(leads_row)
+        amplitude_row = QHBoxLayout()
+        amplitude_row.addWidget(QLabel("Amplitud:"))
+        self.amplitude_label = QLabel("0.0 ADC")
+        self.amplitude_label.setStyleSheet("color: #ff3b30;")
+        amplitude_row.addWidget(self.amplitude_label)
+        signal_status_column.addLayout(amplitude_row)
+        status_row.addLayout(signal_status_column)
         layout.addLayout(status_row)
 
         bpm_column = QVBoxLayout()
@@ -383,14 +458,13 @@ class MainWindow(QMainWindow):
         self.plot_widget.setBackground("#0a0a0a")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
         self.plot_widget.setLabel("left", "Señal", units="ADC")
-        self.plot_widget.setLabel("bottom", "Muestras recientes")
-        self.plot_widget.setXRange(0, self.HISTORY_SIZE - 1)
+        self.plot_widget.setLabel("bottom", "Tiempo", units="s")
+        self.plot_widget.setXRange(0, self.window_seconds, padding=0)  # type: ignore[reportCallIssue]
+        self.plot_widget.getViewBox().setMouseEnabled(x=False, y=True)
         plot_item = self.plot_widget.getPlotItem()
         if plot_item is not None:
             plot_item.setMenuEnabled(False)
             plot_item.hideButtons()
-            view_box = plot_item.getViewBox()
-            view_box.enableAutoRange(axis=1, enable=True)
             for axis_name in ("left", "bottom"):
                 axis = plot_item.getAxis(axis_name)
                 axis.setPen(pg.mkPen("#777777"))
@@ -405,6 +479,9 @@ class MainWindow(QMainWindow):
         self.save_button = QPushButton("Guardar CSV")
         self.save_button.clicked.connect(self.toggle_csv_recording)
         footer.addWidget(self.save_button)
+        self.view_button = QPushButton("Vista")
+        self.view_button.clicked.connect(self._reset_plot_view)
+        footer.addWidget(self.view_button)
         layout.addLayout(footer)
 
         self.message_label = QLabel("")
@@ -454,6 +531,18 @@ class MainWindow(QMainWindow):
         self.port_selector.addItems(ports)
         self.port_selector.setCurrentText(current_port)
 
+    def _window_changed(self, index: int) -> None:
+        seconds = self.window_selector.itemData(index)
+        if seconds is not None:
+            self.window_seconds = float(seconds)
+            self._redraw_plot()
+
+    def _notch_changed(self, index: int) -> None:
+        frequency = self.notch_selector.itemData(index)
+        self.signal_filter.set_notch_frequency(
+            float(frequency) if frequency is not None else None
+        )
+
     def toggle_connection(self) -> None:
         if self.reader is not None and self.reader.isRunning():
             self.connect_button.setEnabled(False)
@@ -469,8 +558,15 @@ class MainWindow(QMainWindow):
         self.message_label.clear()
         self._set_leads_state("DESCONOCIDO")
         self.signal_filter = ECGSignalFilter()
+        frequency = self.notch_selector.currentData()
+        self.signal_filter.set_notch_frequency(
+            float(frequency) if frequency is not None else None
+        )
         self.peak_detector = ECGPeakDetector()
         self.smoothing_values.clear()
+        self.plot_values.clear()
+        self.plot_start_timestamp = None
+        self._redraw_plot()
         self.bpm_label.setText("--")
         self.connect_button.setEnabled(False)
         self.connect_button.setText("Conectando…")
@@ -530,11 +626,15 @@ class MainWindow(QMainWindow):
                 self.smoothing_values.append(raw_value)
                 detector_input = sum(self.smoothing_values) / len(self.smoothing_values)
 
-            self.plot_values.append(raw_value)
+            if self.plot_start_timestamp is None:
+                self.plot_start_timestamp = timestamp
+            self.plot_values.append((timestamp, raw_value))
             filtered_value = self.signal_filter.add_sample(detector_input, timestamp)
             if filtered_value is not None:
                 bpm = self.peak_detector.add_sample(filtered_value, timestamp)
-                if bpm is not None:
+                if self.peak_detector.signal_too_weak or self.peak_detector.invalid_beat:
+                    self.bpm_label.setText("--")
+                elif bpm is not None:
                     self.bpm_label.setText(str(bpm))
 
             if self.csv_writer is not None:
@@ -546,7 +646,52 @@ class MainWindow(QMainWindow):
                     self._stop_csv_recording()
                     self._show_error(f"No se pudo escribir el CSV: {exc}")
 
-        self.curve.setData(list(self.plot_values))
+        signal_range = self.peak_detector.signal_range
+        self.amplitude_label.setText(f"{signal_range:.1f} ADC")
+        if signal_range > 50:
+            amplitude_color = "#00ff66"
+        elif signal_range >= 5:
+            amplitude_color = "#ffd60a"
+        else:
+            amplitude_color = "#ff3b30"
+        self.amplitude_label.setStyleSheet(f"color: {amplitude_color};")
+
+        self._redraw_plot()
+
+    def _redraw_plot(self) -> None:
+        if not self.plot_values:
+            self.curve.setData(x=[], y=[])
+            self.plot_widget.setXRange(0, self.window_seconds, padding=0)  # type: ignore[reportCallIssue]
+            return
+
+        latest_timestamp = self.plot_values[-1][0]
+        cutoff = latest_timestamp - self.window_seconds
+        while self.plot_values and self.plot_values[0][0] < cutoff:
+            self.plot_values.popleft()
+
+        if self.plot_start_timestamp is None:
+            self.plot_start_timestamp = self.plot_values[0][0]
+        t_now = latest_timestamp - self.plot_start_timestamp
+        x = [timestamp - self.plot_start_timestamp for timestamp, _ in self.plot_values]
+        y = [value for _, value in self.plot_values]
+        self.curve.setData(x=x, y=y)
+        self.plot_widget.setXRange(t_now - self.window_seconds, t_now, padding=0)  # type: ignore[reportCallIssue]
+        if y:
+            ymin = min(y)
+            ymax = max(y)
+            if ymax == ymin:
+                ymin -= 10
+                ymax += 10
+            else:
+                margin = 0.15 * (ymax - ymin)
+                ymin -= margin
+                ymax += margin
+            self.plot_widget.getViewBox().setRange(
+                yRange=(ymin, ymax), padding=0  # type: ignore[reportCallIssue]
+            )
+
+    def _reset_plot_view(self) -> None:
+        self.plot_widget.getViewBox().autoRange()
 
     def toggle_csv_recording(self) -> None:
         if self.csv_writer is not None:

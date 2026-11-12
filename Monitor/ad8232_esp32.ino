@@ -24,6 +24,8 @@ void loop() {
   const int value = analogRead(ECG_OUTPUT_PIN);
   Serial.print("valor:");
   Serial.println(value);
+  // 250 Hz cubre la banda ECG de 0.5-40 Hz según Nyquist y suaviza la onda.
+  delay(4);
 
   // Envia el estado inicial de electrodos y luego solo los cambios.
   const bool leadsOk =
