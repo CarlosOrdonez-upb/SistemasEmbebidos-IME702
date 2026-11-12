@@ -1,0 +1,124 @@
+{
+  "sujetos": [
+    {
+      "id": "S001",
+      "nombre": "Erick Solano",
+      "edad": 22,
+      "sexo": "Masculino",
+      "sesiones": [
+        {
+          "id": "S001_20261112_165309_115948",
+          "tipo": "Reposo",
+          "fecha": "2026-11-12 16:53:09",
+          "fecha_fin": "2026-11-12 16:59:42",
+          "duracion_segundos": 392.94,
+          "bpm_promedio": 110,
+          "bpm_min": 44,
+          "bpm_max": 148,
+          "csv_path": "mediciones/ErickSolano_Reposo_20261112_165309.csv"
+        }
+      ],
+      "peso_kg": 65.0,
+      "altura_cm": 168,
+      "imc": 23.0,
+      "fumador": true,
+      "cafeina_hoy": true
+    },
+    {
+      "id": "S002",
+      "nombre": "Negrete",
+      "edad": 20,
+      "sexo": "Masculino",
+      "sesiones": [
+        {
+          "id": "S002_20261112_170229_153545",
+          "tipo": "Reposo",
+          "fecha": "2026-11-12 17:02:29",
+          "fecha_fin": "2026-11-12 17:06:44",
+          "duracion_segundos": 258.24,
+          "bpm_promedio": 65,
+          "bpm_min": 40,
+          "bpm_max": 114,
+          "csv_path": "mediciones/Negrete_Reposo_20261112_170229.csv"
+        }
+      ],
+      "peso_kg": 110.0,
+      "altura_cm": 185,
+      "imc": 32.1,
+      "fumador": false,
+      "cafeina_hoy": false
+    },
+    {
+      "id": "S003",
+      "nombre": "Ivan Hernandez",
+      "edad": 21,
+      "sexo": "Masculino",
+      "peso_kg": 64.0,
+      "altura_cm": 168,
+      "imc": 22.7,
+      "fumador": false,
+      "cafeina_hoy": false,
+      "sesiones": [
+        {
+          "id": "S003_20261112_171922_075559",
+          "tipo": "Reposo",
+          "fecha": "2026-11-12 17:19:22",
+          "fecha_fin": "2026-11-12 17:25:18",
+          "duracion_segundos": 356.69,
+          "bpm_promedio": 78,
+          "bpm_min": 40,
+          "bpm_max": 126,
+          "csv_path": "mediciones/IvanHernandez_Reposo_20261112_171922.csv"
+        }
+      ]
+    },
+    {
+      "id": "S004",
+      "nombre": "Diego Gomez",
+      "edad": 21,
+      "sexo": "Masculino",
+      "peso_kg": 61.0,
+      "altura_cm": 160,
+      "imc": 23.8,
+      "fumador": false,
+      "cafeina_hoy": false,
+      "sesiones": [
+        {
+          "id": "S004_20261112_172912_713469",
+          "tipo": "Reposo",
+          "fecha": "2026-11-12 17:29:12",
+          "fecha_fin": "2026-11-12 17:33:45",
+          "duracion_segundos": 272.88,
+          "bpm_promedio": 102,
+          "bpm_min": 53,
+          "bpm_max": 114,
+          "csv_path": "mediciones/DiegoGomez_Reposo_20261112_172912.csv"
+        }
+      ]
+    },
+    {
+      "id": "S005",
+      "nombre": "Carlos Ordoñez",
+      "edad": 30,
+      "sexo": "Masculino",
+      "peso_kg": 70.0,
+      "altura_cm": 172,
+      "imc": 23.7,
+      "fumador": true,
+      "cafeina_hoy": true,
+      "sesiones": [
+        {
+          "id": "S005_20261112_173759_490599",
+          "tipo": "Reposo",
+          "fecha": "2026-11-12 17:37:59",
+          "fecha_fin": "2026-11-12 17:41:11",
+          "duracion_segundos": 191.74,
+          "bpm_promedio": 105,
+          "bpm_min": 42,
+          "bpm_max": 140,
+          "csv_path": "mediciones/CarlosOrdonez_Reposo_20261112_173759.csv"
+        }
+      ]
+    }
+  ]
+}

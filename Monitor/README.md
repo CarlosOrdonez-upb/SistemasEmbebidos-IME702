@@ -9,7 +9,9 @@ Aplicación de escritorio para la adquisición, visualización y análisis de se
 - Eje X basado en tiempo real, con ventanas ajustables de **2, 5, 10 o 20 segundos**.
 - Cálculo de BPM mediante un detector de picos adaptativo, mediana de intervalos y validación de rango fisiológico.
 - Indicadores en vivo del estado de los electrodos (lead-off) y de la amplitud de la señal.
-- Exportación de muestras ADC crudas y estado de electrodos a CSV.
+- Gestión local de sujetos y sesiones, con protocolo guiado de preparación.
+- Comparación de sesiones y estadísticas de BPM por sujeto.
+- Exportación a CSV de las muestras crudas, el estado de electrodos y los metadatos de la sesión.
 - Filtros digitales pasa-altas y pasa-bajas para reducir la deriva de línea base y el ruido de alta frecuencia. SciPy habilita además la selección opcional de notch de 50/60 Hz; sin SciPy se usa el filtro IIR alternativo para el pasa-banda.
 - Lectura serial en un hilo separado para mantener la interfaz receptiva.
 
@@ -83,14 +85,22 @@ python monitor.py
 
 El puerto inicial es **COM3**; puedes seleccionar otro puerto desde la ventana. Cierra el Monitor Serial de Arduino IDE antes de conectar la aplicación, ya que el puerto serial normalmente solo puede ser abierto por un programa a la vez.
 
+## Sujetos y sesiones
+
+Registra o edita sujetos desde **Sujetos**, selecciona el sujeto activo y usa **Iniciar Medición** para abrir el protocolo guiado. El protocolo permite completar la lista de preparación y esperar cinco minutos de reposo o marcar **Omitir timer de reposo**. Al finalizar, **Guardar CSV** cierra la sesión, almacena sus estadísticas y genera un archivo en `mediciones/`. El botón **Comparar** permite consultar resúmenes y gráficas por sujeto o por sesión.
+
+Los sujetos y sus sesiones se conservan localmente en `sujetos.json`; cada CSV incluye los metadatos de la medición y sus muestras crudas. Estos archivos pueden contener datos personales y de salud: protégelos y compártelos solo con autorización.
+
 ## Capturas de pantalla
 
 ![Interfaz Principal](images/interfaz_principal.png)
 
 Vista general de la aplicación con la señal ECG, frecuencia cardíaca, amplitud y estado de los electrodos.
 
-![Diagrama de Conexiones](images/vistas.png)
+![Diagrama de Conexiones](images/diagrama_conexiones.png)
 
 Diagrama de cableado entre el módulo AD8232 y los pines del ESP32.
 
-![Diagrama de Conexiones](images/diagrama_conexiones.png)
+![Detección de Picos](images/deteccion_picos.png)
+
+Vista de la señal ECG con los picos detectados y el BPM calculado.

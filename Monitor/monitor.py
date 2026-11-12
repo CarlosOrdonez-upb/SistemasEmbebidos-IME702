@@ -1,12 +1,16 @@
 """Monitor ECG en tiempo real para datos seriales de un AD8232."""
 
 import csv
+import json
 import math
+import re
 import sys
 import time
+import unicodedata
 from collections import deque
-from datetime import datetime
-from statistics import median
+from datetime import datetime, timedelta
+from pathlib import Path
+from statistics import mean, median
 from typing import cast
 
 import numpy as np
@@ -17,14 +21,24 @@ from PyQt6.QtCore import QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QApplication,
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QDoubleSpinBox,
     QFileDialog,
+    QFormLayout,
+    QHeaderView,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -335,20 +349,924 @@ class ECGPeakDetector:
         return bpm
 
 
+PROJECT_DIRECTORY = Path(__file__).resolve().parent
+SUBJECTS_JSON_PATH = PROJECT_DIRECTORY / "sujetos.json"
+MEASUREMENTS_DIRECTORY = PROJECT_DIRECTORY / "mediciones"
+SEX_OPTIONS = ("Masculino", "Femenino", "Prefiero no decir")
+SESSION_TYPES = ("Antes de ejercicio", "Después de ejercicio", "Reposo", "Otro")
+
+
+def _calculate_bmi(weight_kg: float, height_cm: int) -> float:
+    if weight_kg <= 0 or height_cm <= 0:
+        return 0.0
+    return round(weight_kg / (height_cm / 100) ** 2, 1)
+
+
+class SubjectStore:
+    """Lee y persiste sujetos y sesiones en el JSON del proyecto."""
+
+    def __init__(self, path: Path | None = None) -> None:
+        self.path = path or SUBJECTS_JSON_PATH
+
+    def load(self) -> list[dict]:
+        if not self.path.exists():
+            return []
+        try:
+            with self.path.open("r", encoding="utf-8") as file:
+                data = json.load(file)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"El archivo {self.path.name} no contiene JSON válido.") from exc
+
+        if not isinstance(data, dict) or not isinstance(data.get("sujetos"), list):
+            raise ValueError(f"El archivo {self.path.name} no tiene la estructura esperada.")
+        subjects = data["sujetos"]
+        for subject in subjects:
+            if (
+                not isinstance(subject, dict)
+                or not subject.get("id")
+                or not subject.get("nombre")
+                or not isinstance(subject.get("sesiones", []), list)
+                or any(
+                    not isinstance(session, dict)
+                    for session in subject.get("sesiones", [])
+                )
+            ):
+                raise ValueError("La lista de sujetos contiene registros inválidos.")
+            try:
+                age = int(subject.get("edad", 0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Un sujeto tiene una edad inválida en sujetos.json.") from exc
+            if not 1 <= age <= 120 or subject.get("sexo") not in SEX_OPTIONS:
+                raise ValueError("Un sujeto tiene edad o sexo inválido en sujetos.json.")
+            try:
+                weight = float(subject.get("peso_kg", 0.0))
+                height = int(subject.get("altura_cm", 0))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Un sujeto tiene peso o altura inválidos en sujetos.json.") from exc
+            if (weight != 0 and not 20 <= weight <= 250) or (
+                height != 0 and not 50 <= height <= 250
+            ):
+                raise ValueError("Un sujeto tiene peso o altura fuera de rango en sujetos.json.")
+            if not isinstance(subject.get("fumador", False), bool) or not isinstance(
+                subject.get("cafeina_hoy", False), bool
+            ):
+                raise ValueError("Los hábitos del sujeto son inválidos en sujetos.json.")
+            subject["peso_kg"] = weight
+            subject["altura_cm"] = height
+            subject["imc"] = _calculate_bmi(weight, height)
+            subject["fumador"] = subject.get("fumador", False)
+            subject["cafeina_hoy"] = subject.get("cafeina_hoy", False)
+        return subjects
+
+    def save(self, subjects: list[dict]) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("w", encoding="utf-8") as file:
+            json.dump({"sujetos": subjects}, file, ensure_ascii=False, indent=2)
+
+    def get(self, subject_id: str) -> dict | None:
+        return next((subject for subject in self.load() if subject.get("id") == subject_id), None)
+
+    def add_subject(self, subject_data: dict) -> str:
+        name = str(subject_data.get("nombre", "")).strip()
+        age = int(subject_data.get("edad", 0))
+        sex = str(subject_data.get("sexo", ""))
+        if not name or not 1 <= age <= 120 or sex not in SEX_OPTIONS:
+            raise ValueError("Los datos del sujeto no son válidos.")
+        weight = float(subject_data.get("peso_kg", 0.0))
+        height = int(subject_data.get("altura_cm", 0))
+        smoker = subject_data.get("fumador", False)
+        caffeine = subject_data.get("cafeina_hoy", False)
+        if (
+            (weight != 0 and not 20 <= weight <= 250)
+            or (height != 0 and not 50 <= height <= 250)
+            or not isinstance(smoker, bool)
+            or not isinstance(caffeine, bool)
+        ):
+            raise ValueError("Los datos biométricos o de estilo de vida no son válidos.")
+
+        subjects = self.load()
+        existing_numbers = [
+            int(match.group(1))
+            for subject in subjects
+            if (match := re.fullmatch(r"S(\d+)", str(subject.get("id", ""))))
+        ]
+        subject_id = f"S{max(existing_numbers, default=0) + 1:03d}"
+        subjects.append(
+            {
+                "id": subject_id,
+                "nombre": name,
+                "edad": age,
+                "sexo": sex,
+                "peso_kg": weight,
+                "altura_cm": height,
+                "imc": _calculate_bmi(weight, height),
+                "fumador": smoker,
+                "cafeina_hoy": caffeine,
+                "sesiones": [],
+            }
+        )
+        self.save(subjects)
+        return subject_id
+
+    def update_subject(self, subject_id: str, subject_data: dict) -> None:
+        name = str(subject_data.get("nombre", "")).strip()
+        age = int(subject_data.get("edad", 0))
+        sex = str(subject_data.get("sexo", ""))
+        if not name or not 1 <= age <= 120 or sex not in SEX_OPTIONS:
+            raise ValueError("Los datos del sujeto no son válidos.")
+        weight = float(subject_data.get("peso_kg", 0.0))
+        height = int(subject_data.get("altura_cm", 0))
+        smoker = subject_data.get("fumador", False)
+        caffeine = subject_data.get("cafeina_hoy", False)
+        if (
+            (weight != 0 and not 20 <= weight <= 250)
+            or (height != 0 and not 50 <= height <= 250)
+            or not isinstance(smoker, bool)
+            or not isinstance(caffeine, bool)
+        ):
+            raise ValueError("Los datos biométricos o de estilo de vida no son válidos.")
+        subjects = self.load()
+        for subject in subjects:
+            if subject.get("id") == subject_id:
+                subject["nombre"] = name
+                subject["edad"] = age
+                subject["sexo"] = sex
+                subject["peso_kg"] = weight
+                subject["altura_cm"] = height
+                subject["imc"] = _calculate_bmi(weight, height)
+                subject["fumador"] = smoker
+                subject["cafeina_hoy"] = caffeine
+                self.save(subjects)
+                return
+        raise KeyError("No se encontró el sujeto seleccionado.")
+
+    def delete_subject(self, subject_id: str) -> None:
+        subjects = self.load()
+        updated_subjects = [subject for subject in subjects if subject.get("id") != subject_id]
+        if len(updated_subjects) == len(subjects):
+            raise KeyError("No se encontró el sujeto seleccionado.")
+        self.save(updated_subjects)
+
+    def add_session(self, subject_id: str, session: dict) -> None:
+        subjects = self.load()
+        for subject in subjects:
+            if subject.get("id") == subject_id:
+                subject.setdefault("sesiones", []).append(session)
+                self.save(subjects)
+                return
+        raise KeyError("El sujeto asociado a la sesión ya no existe.")
+
+
+def apply_dialog_theme(dialog: QDialog) -> None:
+    """Aplica el tema oscuro a los diálogos de gestión y análisis."""
+    dialog.setStyleSheet(
+        """
+        QDialog { background: #0a0a0a; color: #eeeeee; }
+        QLabel { color: #eeeeee; }
+        QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QTableWidget {
+            background: #171717; color: #eeeeee; border: 1px solid #393939;
+            border-radius: 5px; padding: 5px;
+        }
+        QHeaderView::section {
+            background: #222222; color: #eeeeee; padding: 6px;
+            border: 1px solid #393939;
+        }
+        QPushButton {
+            background: #202020; color: #eeeeee; border: 1px solid #393939;
+            border-radius: 6px; padding: 7px 12px;
+        }
+        QPushButton:hover { background: #303030; border-color: #00cc55; }
+        QCheckBox { color: #eeeeee; spacing: 8px; }
+        """
+    )
+
+
+class SubjectEditorDialog(QDialog):
+    """Formulario modal para crear o editar un sujeto."""
+
+    def __init__(self, subject: dict | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Editar sujeto" if subject else "Nuevo sujeto")
+        apply_dialog_theme(self)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name_edit = QLineEdit(subject.get("nombre", "") if subject else "")
+        self.age_spin = QSpinBox()
+        self.age_spin.setRange(1, 120)
+        self.age_spin.setValue(int(subject.get("edad", 25)) if subject else 25)
+        self.sex_combo = QComboBox()
+        self.sex_combo.addItems(SEX_OPTIONS)
+        if subject:
+            self.sex_combo.setCurrentText(subject.get("sexo", SEX_OPTIONS[0]))
+        self.weight_spin = QDoubleSpinBox()
+        self.weight_spin.setRange(20.0, 250.0)
+        self.weight_spin.setDecimals(1)
+        weight = float(subject.get("peso_kg", 0.0)) if subject else 0.0
+        self._weight_available = 20 <= weight <= 250
+        self.weight_spin.setValue(weight if self._weight_available else 20.0)
+        self.height_spin = QSpinBox()
+        self.height_spin.setRange(50, 250)
+        height = int(subject.get("altura_cm", 0)) if subject else 0
+        self._height_available = 50 <= height <= 250
+        self.height_spin.setValue(height if self._height_available else 50)
+        self.smoker_checkbox = QCheckBox("Es fumador")
+        self.smoker_checkbox.setChecked(bool(subject.get("fumador", False)) if subject else False)
+        self.caffeine_checkbox = QCheckBox("Consumió cafeína en las últimas 4 horas")
+        self.caffeine_checkbox.setChecked(
+            bool(subject.get("cafeina_hoy", False)) if subject else False
+        )
+        self.bmi_label = QLabel()
+        self.bmi_label.setStyleSheet("color: #eeeeee;")
+        height_bmi_row = QWidget(self)
+        height_bmi_layout = QHBoxLayout(height_bmi_row)
+        height_bmi_layout.setContentsMargins(0, 0, 0, 0)
+        height_bmi_layout.addWidget(self.height_spin)
+        height_bmi_layout.addWidget(self.bmi_label)
+        form.addRow("Nombre completo:", self.name_edit)
+        form.addRow("Edad:", self.age_spin)
+        form.addRow("Sexo:", self.sex_combo)
+        form.addRow("Peso (kg):", self.weight_spin)
+        form.addRow("Altura (cm):", height_bmi_row)
+        form.addRow("", self.smoker_checkbox)
+        form.addRow("", self.caffeine_checkbox)
+        self.weight_spin.valueChanged.connect(self._weight_changed)
+        self.weight_spin.editingFinished.connect(self._mark_weight_available)
+        self.height_spin.valueChanged.connect(self._height_changed)
+        self.height_spin.editingFinished.connect(self._mark_height_available)
+        self._update_bmi()
+        layout.addLayout(form)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept_if_valid)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def subject_data(self) -> dict:
+        return {
+            "nombre": self.name_edit.text().strip(),
+            "edad": self.age_spin.value(),
+            "sexo": self.sex_combo.currentText(),
+            "peso_kg": self.weight_spin.value() if self._weight_available else 0.0,
+            "altura_cm": self.height_spin.value() if self._height_available else 0,
+            "imc": _calculate_bmi(
+                self.weight_spin.value() if self._weight_available else 0.0,
+                self.height_spin.value() if self._height_available else 0,
+            ),
+            "fumador": self.smoker_checkbox.isChecked(),
+            "cafeina_hoy": self.caffeine_checkbox.isChecked(),
+        }
+
+    def _update_bmi(self) -> None:
+        if not self._weight_available or not self._height_available:
+            self.bmi_label.setText("IMC: Ingresa peso y altura")
+            self.bmi_label.setStyleSheet("color: #eeeeee;")
+            return
+        bmi = _calculate_bmi(self.weight_spin.value(), self.height_spin.value())
+        if bmi < 18.5:
+            status, color = "Bajo peso", "#00cc55"
+        elif bmi < 25:
+            status, color = "Normal", "#e6c229"
+        elif bmi < 30:
+            status, color = "Sobrepeso", "#ff8c00"
+        else:
+            status, color = "Obesidad", "#ff3b30"
+        self.bmi_label.setText(f"IMC: {bmi:.1f} - {status}")
+        self.bmi_label.setStyleSheet(f"color: {color};")
+
+    def _weight_changed(self) -> None:
+        self._weight_available = True
+        self._update_bmi()
+
+    def _height_changed(self) -> None:
+        self._height_available = True
+        self._update_bmi()
+
+    def _mark_weight_available(self) -> None:
+        self._weight_available = True
+        self._update_bmi()
+
+    def _mark_height_available(self) -> None:
+        self._height_available = True
+        self._update_bmi()
+
+    def _accept_if_valid(self) -> None:
+        if not self.name_edit.text().strip():
+            QMessageBox.warning(self, "Dato obligatorio", "Ingresa el nombre completo del sujeto.")
+            self.name_edit.setFocus()
+            return
+        self.accept()
+
+
+class SubjectManagementDialog(QDialog):
+    """Administra sujetos registrados y muestra sus sesiones previas."""
+
+    subjects_changed = pyqtSignal()
+
+    def __init__(
+        self,
+        store: SubjectStore,
+        protected_subject_id: str | None = None,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self.store = store
+        self.protected_subject_id = protected_subject_id
+        self.subjects: list[dict] = []
+        self.setWindowTitle("Gestión de sujetos y sesiones")
+        self.resize(900, 650)
+        apply_dialog_theme(self)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Sujetos registrados"))
+        self.subject_table = QTableWidget(0, 4)
+        self.subject_table.setHorizontalHeaderLabels(["Nombre", "Edad", "Sexo", "# Sesiones"])
+        self._configure_table(self.subject_table)
+        self.subject_table.cellClicked.connect(self._show_subject_sessions)
+        layout.addWidget(self.subject_table, stretch=1)
+
+        subject_buttons = QHBoxLayout()
+        self.new_button = QPushButton("Nuevo Sujeto")
+        self.new_button.clicked.connect(self._new_subject)
+        subject_buttons.addWidget(self.new_button)
+        self.edit_button = QPushButton("Editar")
+        self.edit_button.clicked.connect(self._edit_subject)
+        subject_buttons.addWidget(self.edit_button)
+        self.delete_button = QPushButton("Eliminar")
+        self.delete_button.clicked.connect(self._delete_subject)
+        subject_buttons.addWidget(self.delete_button)
+        subject_buttons.addStretch()
+        layout.addLayout(subject_buttons)
+
+        layout.addWidget(QLabel("Sesiones del sujeto seleccionado"))
+        self.sessions_table = QTableWidget(0, 7)
+        self.sessions_table.setHorizontalHeaderLabels(
+            ["Fecha", "Tipo", "Duración (s)", "BPM promedio", "BPM min", "BPM max", "CSV"]
+        )
+        self._configure_table(self.sessions_table)
+        layout.addWidget(self.sessions_table, stretch=1)
+
+        close_button = QPushButton("Cerrar")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+        self._reload_subjects()
+
+    @staticmethod
+    def _configure_table(table: QTableWidget) -> None:
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        header = table.horizontalHeader()
+        if header is not None:
+            header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+    def _reload_subjects(self, selected_id: str | None = None) -> None:
+        try:
+            self.subjects = self.store.load()
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Error de datos", str(exc))
+            self.subjects = []
+        self.subject_table.setRowCount(0)
+        self.sessions_table.setRowCount(0)
+        for subject in self.subjects:
+            row = self.subject_table.rowCount()
+            self.subject_table.insertRow(row)
+            sessions = subject.get("sesiones", [])
+            values = (
+                str(subject.get("nombre", "")),
+                str(subject.get("edad", "")),
+                str(subject.get("sexo", "")),
+                str(len(sessions) if isinstance(sessions, list) else 0),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, subject.get("id"))
+                self.subject_table.setItem(row, column, item)
+            if subject.get("id") == selected_id:
+                self.subject_table.setCurrentCell(row, 0)
+                self._populate_sessions(subject)
+
+    def _selected_subject(self) -> dict | None:
+        row = self.subject_table.currentRow()
+        if row < 0:
+            return None
+        item = self.subject_table.item(row, 0)
+        if item is None:
+            return None
+        subject_id = item.data(Qt.ItemDataRole.UserRole)
+        return next((subject for subject in self.subjects if subject.get("id") == subject_id), None)
+
+    def _show_subject_sessions(self, row: int, column: int) -> None:
+        del column
+        item = self.subject_table.item(row, 0)
+        if item is None:
+            return
+        subject_id = item.data(Qt.ItemDataRole.UserRole)
+        subject = next(
+            (entry for entry in self.subjects if entry.get("id") == subject_id), None
+        )
+        if subject is not None:
+            self._populate_sessions(subject)
+
+    def _populate_sessions(self, subject: dict) -> None:
+        sessions = subject.get("sesiones", [])
+        if not isinstance(sessions, list):
+            sessions = []
+        self.sessions_table.setRowCount(0)
+        for session in sessions:
+            row = self.sessions_table.rowCount()
+            self.sessions_table.insertRow(row)
+            values = (
+                str(session.get("fecha", "")),
+                str(session.get("tipo", "")),
+                str(session.get("duracion_segundos", "")),
+                _format_number(session.get("bpm_promedio")),
+                _format_number(session.get("bpm_min")),
+                _format_number(session.get("bpm_max")),
+                str(session.get("csv_path", "")),
+            )
+            for column, value in enumerate(values):
+                self.sessions_table.setItem(row, column, QTableWidgetItem(value))
+
+    def _new_subject(self) -> None:
+        dialog = SubjectEditorDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            subject_id = self.store.add_subject(dialog.subject_data())
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "No se pudo guardar", str(exc))
+            return
+        self._reload_subjects(subject_id)
+        self.subjects_changed.emit()
+
+    def _edit_subject(self) -> None:
+        subject = self._selected_subject()
+        if subject is None:
+            QMessageBox.information(self, "Selecciona un sujeto", "Elige un sujeto para editar.")
+            return
+        dialog = SubjectEditorDialog(subject, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.store.update_subject(str(subject["id"]), dialog.subject_data())
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.critical(self, "No se pudo actualizar", str(exc))
+            return
+        self._reload_subjects(str(subject["id"]))
+        self.subjects_changed.emit()
+
+    def _delete_subject(self) -> None:
+        subject = self._selected_subject()
+        if subject is None:
+            QMessageBox.information(self, "Selecciona un sujeto", "Elige un sujeto para eliminar.")
+            return
+        subject_id = str(subject["id"])
+        if subject_id == self.protected_subject_id:
+            QMessageBox.warning(
+                self, "Medición activa", "No se puede eliminar el sujeto de una medición activa."
+            )
+            return
+        answer = QMessageBox.question(
+            self,
+            "Confirmar eliminación",
+            "¿Eliminar el sujeto y sus sesiones registradas? Los archivos CSV existentes no se borrarán.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.store.delete_subject(subject_id)
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.critical(self, "No se pudo eliminar", str(exc))
+            return
+        self._reload_subjects()
+        self.subjects_changed.emit()
+
+
+def _format_number(value) -> str:
+    """Formatea valores numéricos de sesiones o muestra N/D."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{value:g}"
+    return "N/D"
+
+
+class ProtocolDialog(QDialog):
+    """Guía la preparación del sujeto y el tipo de medición."""
+
+    REST_SECONDS = 5 * 60
+
+    def __init__(self, subject_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Protocolo de medición")
+        self.resize(560, 500)
+        apply_dialog_theme(self)
+
+        self.remaining_seconds = self.REST_SECONDS
+        self.timer_complete = False
+        self.timer = QTimer(self)
+        self.timer.setInterval(1000)
+        self.timer.timeout.connect(self._timer_tick)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f"Sujeto: {subject_name}"))
+        layout.addWidget(QLabel("Lista de preparación"))
+        self.checklist = [
+            QCheckBox("Sujeto en reposo durante 5 minutos"),
+            QCheckBox("Electrodos colocados correctamente (RA, LA, RL)"),
+            QCheckBox("Sujeto sin movimientos durante la medición"),
+            QCheckBox("Sin hablar durante la medición"),
+        ]
+        for checkbox in self.checklist:
+            checkbox.toggled.connect(self._update_begin_button)
+            layout.addWidget(checkbox)
+
+        self.skip_timer_checkbox = QCheckBox("Omitir timer de reposo")
+        self.skip_timer_checkbox.toggled.connect(self._skip_timer_changed)
+        layout.addWidget(self.skip_timer_checkbox)
+
+        timer_row = QHBoxLayout()
+        self.countdown_label = QLabel(self._format_countdown(self.remaining_seconds))
+        timer_row.addWidget(self.countdown_label)
+        self.start_timer_button = QPushButton("Iniciar Timer")
+        self.start_timer_button.clicked.connect(self._start_timer)
+        timer_row.addWidget(self.start_timer_button)
+        timer_row.addStretch()
+        layout.addLayout(timer_row)
+
+        session_form = QFormLayout()
+        self.session_type_combo = QComboBox()
+        self.session_type_combo.addItems(SESSION_TYPES)
+        session_form.addRow("Tipo de sesión:", self.session_type_combo)
+        layout.addLayout(session_form)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+        self.begin_button = QPushButton("Comenzar Medición")
+        self.begin_button.setEnabled(False)
+        self.begin_button.clicked.connect(self.accept)
+        layout.addWidget(self.begin_button)
+        self._update_begin_button()
+
+    @staticmethod
+    def _format_countdown(seconds: int) -> str:
+        minutes, remaining = divmod(max(seconds, 0), 60)
+        return f"Tiempo de reposo: {minutes:02d}:{remaining:02d}"
+
+    @property
+    def session_type(self) -> str:
+        return self.session_type_combo.currentText()
+
+    def _skip_timer_changed(self, checked: bool) -> None:
+        if checked:
+            self.timer.stop()
+            self.timer_complete = True
+            self.countdown_label.setText("Timer de reposo omitido")
+            self.start_timer_button.setEnabled(False)
+        else:
+            self.timer_complete = False
+            self.remaining_seconds = self.REST_SECONDS
+            self.countdown_label.setText(self._format_countdown(self.remaining_seconds))
+            self.start_timer_button.setEnabled(True)
+        self._update_begin_button()
+
+    def _start_timer(self) -> None:
+        if self.skip_timer_checkbox.isChecked():
+            return
+        self.remaining_seconds = self.REST_SECONDS
+        self.timer_complete = False
+        self.countdown_label.setText(self._format_countdown(self.remaining_seconds))
+        self.start_timer_button.setEnabled(False)
+        self.timer.start()
+        self._update_begin_button()
+
+    def _timer_tick(self) -> None:
+        self.remaining_seconds -= 1
+        self.countdown_label.setText(self._format_countdown(self.remaining_seconds))
+        if self.remaining_seconds <= 0:
+            self.timer.stop()
+            self.timer_complete = True
+            self.countdown_label.setText("Reposo completado")
+        self._update_begin_button()
+
+    def _update_begin_button(self, checked: bool = False) -> None:
+        del checked
+        checklist_complete = all(checkbox.isChecked() for checkbox in self.checklist)
+        timer_ready = self.timer_complete or self.skip_timer_checkbox.isChecked()
+        self.begin_button.setEnabled(checklist_complete and timer_ready)
+
+
+class SessionDetailsDialog(QDialog):
+    """Presenta las sesiones y sus estadísticas para un sujeto."""
+
+    def __init__(self, subject: dict, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Sesiones de {subject.get('nombre', '')}")
+        self.resize(760, 420)
+        apply_dialog_theme(self)
+        layout = QVBoxLayout(self)
+        table = QTableWidget(0, 6)
+        table.setHorizontalHeaderLabels(
+            ["Fecha", "Tipo", "Duración (s)", "BPM promedio", "BPM min", "BPM max"]
+        )
+        SubjectManagementDialog._configure_table(table)
+        for session in subject.get("sesiones", []):
+            row = table.rowCount()
+            table.insertRow(row)
+            values = (
+                str(session.get("fecha", "")),
+                str(session.get("tipo", "")),
+                str(session.get("duracion_segundos", "")),
+                _format_number(session.get("bpm_promedio")),
+                _format_number(session.get("bpm_min")),
+                _format_number(session.get("bpm_max")),
+            )
+            for column, value in enumerate(values):
+                table.setItem(row, column, QTableWidgetItem(value))
+        layout.addWidget(table)
+        close_button = QPushButton("Cerrar")
+        close_button.clicked.connect(self.accept)
+        layout.addWidget(close_button, alignment=Qt.AlignmentFlag.AlignRight)
+
+
+def _session_bpm_values(subject: dict) -> list[float]:
+    """Devuelve los BPM promedio de las sesiones que tienen mediciones válidas."""
+    values = []
+    for session in subject.get("sesiones", []):
+        value = session.get("bpm_promedio")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            values.append(float(value))
+    return values
+
+
+def _subject_summary(subject: dict) -> tuple[float | None, str]:
+    """Calcula BPM general y fecha de la última sesión registrada."""
+    values = _session_bpm_values(subject)
+    sessions = subject.get("sesiones", [])
+    latest = max(
+        sessions,
+        key=lambda session: str(session.get("fecha", "")),
+        default=None,
+    )
+    latest_date = str(latest.get("fecha", "N/D")) if latest else "N/D"
+    return (mean(values) if values else None, latest_date)
+
+
+class ComparisonDialog(QDialog):
+    """Resume y compara BPM de sujetos o sesiones individuales."""
+
+    def __init__(self, subjects: list[dict], parent=None) -> None:
+        super().__init__(parent)
+        self.subjects = subjects
+        self.setWindowTitle("Comparación de sujetos y sesiones")
+        self.resize(1100, 760)
+        apply_dialog_theme(self)
+
+        layout = QVBoxLayout(self)
+        self.summary_table = QTableWidget(0, 9)
+        self.summary_table.setHorizontalHeaderLabels(
+            [
+                "Nombre",
+                "Edad",
+                "Sexo",
+                "IMC",
+                "Fumador",
+                "Cafeína",
+                "# Sesiones",
+                "BPM Promedio General",
+                "Última Medición",
+            ]
+        )
+        SubjectManagementDialog._configure_table(self.summary_table)
+        self.summary_table.cellDoubleClicked.connect(self._show_selected_details)
+        layout.addWidget(self.summary_table, stretch=1)
+        self._populate_summary()
+
+        chart_controls = QHBoxLayout()
+        chart_controls.addWidget(QLabel("Comparar:"))
+        self.comparison_selector = QComboBox()
+        self.comparison_selector.addItem("Todos los sujetos", None)
+        for subject in subjects:
+            self.comparison_selector.addItem(
+                str(subject.get("nombre", "")), str(subject.get("id", ""))
+            )
+        self.comparison_selector.currentIndexChanged.connect(self._draw_comparison)
+        chart_controls.addWidget(self.comparison_selector)
+        self.details_button = QPushButton("Ver Detalle")
+        self.details_button.clicked.connect(lambda: self._show_selected_details())
+        chart_controls.addWidget(self.details_button)
+        layout.addLayout(chart_controls)
+
+        self.chart_widget = pg.PlotWidget()
+        self.chart_widget.setBackground("#0a0a0a")
+        self.chart_widget.showGrid(x=True, y=True, alpha=0.2)
+        plot_item = self.chart_widget.getPlotItem()
+        if plot_item is not None:
+            for axis_name in ("left", "bottom"):
+                axis = plot_item.getAxis(axis_name)
+                axis.setPen(pg.mkPen("#777777"))
+                axis.setTextPen(pg.mkPen("#aaaaaa"))
+        layout.addWidget(self.chart_widget, stretch=2)
+        self.chart_message = QLabel("")
+        layout.addWidget(self.chart_message)
+
+        bottom_buttons = QHBoxLayout()
+        self.export_button = QPushButton("Exportar Resumen")
+        self.export_button.clicked.connect(self._export_summary)
+        bottom_buttons.addWidget(self.export_button)
+        bottom_buttons.addStretch()
+        close_button = QPushButton("Cerrar")
+        close_button.clicked.connect(self.accept)
+        bottom_buttons.addWidget(close_button)
+        layout.addLayout(bottom_buttons)
+        self._draw_comparison()
+
+    def _populate_summary(self) -> None:
+        self.summary_table.setRowCount(0)
+        for subject in self.subjects:
+            row = self.summary_table.rowCount()
+            self.summary_table.insertRow(row)
+            sessions = subject.get("sesiones", [])
+            average, latest_date = _subject_summary(subject)
+            values = (
+                str(subject.get("nombre", "")),
+                str(subject.get("edad", "")),
+                str(subject.get("sexo", "")),
+                _format_number(subject.get("imc")) if subject.get("imc", 0) else "N/D",
+                "Sí" if subject.get("fumador", False) else "No",
+                "Sí" if subject.get("cafeina_hoy", False) else "No",
+                str(len(sessions)),
+                _format_number(average),
+                latest_date,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, subject.get("id"))
+                self.summary_table.setItem(row, column, item)
+
+    def _draw_comparison(self, index: int = 0) -> None:
+        del index
+        plot_item = self.chart_widget.getPlotItem()
+        if plot_item is None:
+            return
+        plot_item.clear()
+        selected_id = self.comparison_selector.currentData()
+        if selected_id is None:
+            plot_item.setLabel("left", "BPM")
+            plot_item.setLabel("bottom", "Sujeto")
+            chart_subjects = [
+                (subject, mean(values))
+                for subject in self.subjects
+                if (values := _session_bpm_values(subject))
+            ]
+            if not chart_subjects:
+                self.chart_message.setText("No hay sesiones con BPM válidos para comparar.")
+                return
+            positions = list(range(len(chart_subjects)))
+            names = [str(subject.get("nombre", "")) for subject, _ in chart_subjects]
+            averages = [average for _, average in chart_subjects]
+            plot_item.addItem(
+                pg.BarGraphItem(
+                    x=positions,
+                    height=averages,
+                    width=0.65,
+                    brush="#00ff66",
+                    pen=pg.mkPen("#00cc55"),
+                )
+            )
+            plot_item.getAxis("bottom").setTicks(
+                [[(position, name[:12]) for position, name in zip(positions, names)]]
+            )
+            self.chart_widget.getViewBox().autoRange()
+            self.chart_message.setText("BPM promedio general por sujeto.")
+            return
+
+        subject = next(
+            (entry for entry in self.subjects if entry.get("id") == selected_id), None
+        )
+        if subject is None:
+            self.chart_message.setText("No se encontró el sujeto seleccionado.")
+            return
+        plot_item.setLabel("left", "BPM")
+        plot_item.setLabel("bottom", "Sesión")
+        sessions = sorted(
+            subject.get("sesiones", []),
+            key=lambda session: str(session.get("fecha", "")),
+        )
+        valid_sessions = [
+            session
+            for session in sessions
+            if isinstance(session.get("bpm_promedio"), (int, float))
+            and not isinstance(session.get("bpm_promedio"), bool)
+        ]
+        if not valid_sessions:
+            self.chart_message.setText("El sujeto no tiene sesiones con BPM válidos.")
+            return
+        positions = list(range(1, len(valid_sessions) + 1))
+        bpm_values = [float(session["bpm_promedio"]) for session in valid_sessions]
+        plot_item.plot(
+            positions,
+            bpm_values,
+            pen=pg.mkPen("#00ff66", width=2),
+            symbol="o",
+            symbolBrush="#00ff66",
+            symbolSize=8,
+        )
+        labels = [
+            f"{position}: {str(session.get('tipo', ''))[:10]}"
+            for position, session in zip(positions, valid_sessions)
+        ]
+        plot_item.getAxis("bottom").setTicks(
+            [[(position, label) for position, label in zip(positions, labels)]]
+        )
+        self.chart_widget.getViewBox().autoRange()
+        self.chart_message.setText(f"Sesiones registradas de {subject.get('nombre', '')}.")
+
+    def _show_selected_details(self, row: int | None = None, column: int = 0) -> None:
+        del column
+        if row is None:
+            row = self.summary_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Selecciona un sujeto", "Elige un sujeto de la tabla.")
+            return
+        item = self.summary_table.item(row, 0)
+        if item is None:
+            return
+        subject_id = item.data(Qt.ItemDataRole.UserRole)
+        subject = next(
+            (entry for entry in self.subjects if entry.get("id") == subject_id), None
+        )
+        if subject is not None:
+            SessionDetailsDialog(subject, self).exec()
+
+    def _export_summary(self) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Exportar resumen de sujetos", "resumen_sujetos.csv", "Archivos CSV (*.csv)"
+        )
+        if not filename:
+            return
+        try:
+            with open(filename, "w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file)
+                writer.writerow(
+                    [
+                        "Nombre",
+                        "Edad",
+                        "Sexo",
+                        "IMC",
+                        "Fumador",
+                        "Cafeína",
+                        "# Sesiones",
+                        "BPM Promedio General",
+                        "Última Medición",
+                    ]
+                )
+                for subject in self.subjects:
+                    average, latest_date = _subject_summary(subject)
+                    writer.writerow(
+                        [
+                            subject.get("nombre", ""),
+                            subject.get("edad", ""),
+                            subject.get("sexo", ""),
+                            _format_number(subject.get("imc"))
+                            if subject.get("imc", 0)
+                            else "N/D",
+                            "Sí" if subject.get("fumador", False) else "No",
+                            "Sí" if subject.get("cafeina_hoy", False) else "No",
+                            len(subject.get("sesiones", [])),
+                            _format_number(average),
+                            latest_date,
+                        ]
+                    )
+        except OSError as exc:
+            QMessageBox.critical(self, "Error al exportar", f"No se pudo guardar el CSV:\n{exc}")
+            return
+        QMessageBox.information(self, "Exportación completada", "El resumen CSV se guardó correctamente.")
+
+
 class MainWindow(QMainWindow):
     """Ventana principal del monitor ECG."""
 
     HISTORY_SIZE = 500
 
-    def __init__(self) -> None:
+    def __init__(self, subject_store: SubjectStore | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Monitor ECG | AD8232")
         self.resize(1050, 760)
 
+        self.subject_store = subject_store or SubjectStore()
+        self.project_directory = self.subject_store.path.parent
+        self.measurements_directory = self.project_directory / "mediciones"
+        self.active_measurement: dict | None = None
+        self.measurement_samples: list[tuple[str, int, str]] = []
+        self.measurement_bpms: list[int] = []
         self.reader = None
         self.leads_state = "DESCONOCIDO"
-        self.csv_file = None
-        self.csv_writer = None
         self.window_seconds = 5.0
         self.plot_start_timestamp: float | None = None
         self.raw_values = deque(maxlen=self.HISTORY_SIZE)
@@ -412,6 +1330,23 @@ class MainWindow(QMainWindow):
         self.connect_button.clicked.connect(self.toggle_connection)
         header.addWidget(self.connect_button)
         layout.addLayout(header)
+
+        session_controls = QHBoxLayout()
+        session_controls.addWidget(QLabel("Sujeto activo:"))
+        self.subject_selector = QComboBox()
+        self.subject_selector.setMinimumWidth(180)
+        session_controls.addWidget(self.subject_selector)
+        self.subjects_button = QPushButton("Sujetos")
+        self.subjects_button.clicked.connect(self._open_subject_management)
+        session_controls.addWidget(self.subjects_button)
+        self.start_measurement_button = QPushButton("Iniciar Medición")
+        self.start_measurement_button.clicked.connect(self._start_measurement)
+        session_controls.addWidget(self.start_measurement_button)
+        self.compare_button = QPushButton("Comparar")
+        self.compare_button.clicked.connect(self._open_comparison)
+        session_controls.addWidget(self.compare_button)
+        session_controls.addStretch()
+        layout.addLayout(session_controls)
 
         status_row = QHBoxLayout()
         self.connection_label = QLabel("Desconectado")
@@ -489,6 +1424,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.message_label)
 
         self.refresh_ports()
+        self._refresh_subject_selector()
 
     def _configure_theme(self) -> None:
         self.setStyleSheet(
@@ -530,6 +1466,112 @@ class MainWindow(QMainWindow):
         self.port_selector.clear()
         self.port_selector.addItems(ports)
         self.port_selector.setCurrentText(current_port)
+
+    def _refresh_subject_selector(self, selected_id: str | None = None) -> None:
+        current_id = selected_id or self.subject_selector.currentData()
+        try:
+            subjects = self.subject_store.load()
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Error de sujetos", str(exc))
+            subjects = []
+
+        previous_block_state = self.subject_selector.blockSignals(True)
+        self.subject_selector.clear()
+        self.subject_selector.addItem("Selecciona sujeto", None)
+        for subject in subjects:
+            self.subject_selector.addItem(
+                f"{subject.get('nombre', '')} ({subject.get('id', '')})",
+                subject.get("id"),
+            )
+        if current_id is not None:
+            index = self.subject_selector.findData(current_id)
+            if index >= 0:
+                self.subject_selector.setCurrentIndex(index)
+        self.subject_selector.blockSignals(previous_block_state)
+
+    def _open_subject_management(self) -> None:
+        protected_id = (
+            self.active_measurement.get("subject_id")
+            if self.active_measurement is not None
+            else None
+        )
+        dialog = SubjectManagementDialog(self.subject_store, protected_id, self)
+        dialog.subjects_changed.connect(lambda: self._refresh_subject_selector())
+        dialog.exec()
+        self._refresh_subject_selector()
+
+    def _open_comparison(self) -> None:
+        try:
+            subjects = self.subject_store.load()
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Error de sujetos", str(exc))
+            return
+        if not subjects:
+            QMessageBox.information(
+                self, "Sin sujetos", "Registra al menos un sujeto antes de comparar."
+            )
+            return
+        ComparisonDialog(subjects, self).exec()
+
+    def _start_measurement(self) -> None:
+        if self.active_measurement is not None:
+            QMessageBox.information(
+                self, "Medición activa", "Finaliza y guarda la medición actual antes de iniciar otra."
+            )
+            return
+
+        subject_id = self.subject_selector.currentData()
+        if subject_id is None:
+            QMessageBox.information(
+                self, "Selecciona un sujeto", "Selecciona un sujeto antes de iniciar la medición."
+            )
+            return
+        try:
+            subject = self.subject_store.get(str(subject_id))
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Error de sujetos", str(exc))
+            return
+        if subject is None:
+            QMessageBox.warning(
+                self, "Sujeto no disponible", "El sujeto seleccionado ya no está registrado."
+            )
+            self._refresh_subject_selector()
+            return
+        if not self.port_selector.currentText().strip():
+            QMessageBox.warning(self, "Puerto requerido", "Selecciona un puerto serial válido.")
+            return
+
+        protocol = ProtocolDialog(str(subject.get("nombre", "")), self)
+        if protocol.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        started_at = datetime.now()
+        self.active_measurement = {
+            "subject_id": str(subject["id"]),
+            "nombre": str(subject.get("nombre", "")),
+            "edad": int(subject.get("edad", 0)),
+            "sexo": str(subject.get("sexo", "")),
+            "peso_kg": float(subject.get("peso_kg", 0.0)),
+            "altura_cm": int(subject.get("altura_cm", 0)),
+            "imc": float(subject.get("imc", 0.0)),
+            "fumador": bool(subject.get("fumador", False)),
+            "cafeina_hoy": bool(subject.get("cafeina_hoy", False)),
+            "tipo": protocol.session_type,
+            "started_at": started_at,
+            "started_monotonic": time.monotonic(),
+        }
+        self.measurement_samples = []
+        self.measurement_bpms = []
+        self.save_button.setText("Finalizar y guardar CSV")
+
+        if self.reader is not None and self.reader.isRunning():
+            self.peak_detector = ECGPeakDetector()
+            self.bpm_label.setText("--")
+        else:
+            self.toggle_connection()
+        self.message_label.setText(
+            f"Medición activa: {subject.get('nombre', '')} — {protocol.session_type}"
+        )
 
     def _window_changed(self, index: int) -> None:
         seconds = self.window_selector.itemData(index)
@@ -636,15 +1678,24 @@ class MainWindow(QMainWindow):
                     self.bpm_label.setText("--")
                 elif bpm is not None:
                     self.bpm_label.setText(str(bpm))
+                    if self.active_measurement is not None:
+                        self.measurement_bpms.append(bpm)
 
-            if self.csv_writer is not None:
-                try:
-                    self.csv_writer.writerow(
-                        [datetime.now().isoformat(timespec="milliseconds"), raw_value, self.leads_state]
+            if self.active_measurement is not None:
+                elapsed = max(
+                    0.0,
+                    timestamp - self.active_measurement["started_monotonic"],
+                )
+                sample_time = self.active_measurement["started_at"] + timedelta(
+                    seconds=elapsed
+                )
+                self.measurement_samples.append(
+                    (
+                        sample_time.isoformat(timespec="milliseconds"),
+                        raw_value,
+                        self.leads_state,
                     )
-                except OSError as exc:
-                    self._stop_csv_recording()
-                    self._show_error(f"No se pudo escribir el CSV: {exc}")
+                )
 
         signal_range = self.peak_detector.signal_range
         self.amplitude_label.setText(f"{signal_range:.1f} ADC")
@@ -694,39 +1745,149 @@ class MainWindow(QMainWindow):
         self.plot_widget.getViewBox().autoRange()
 
     def toggle_csv_recording(self) -> None:
-        if self.csv_writer is not None:
-            self._stop_csv_recording()
+        if self.active_measurement is None:
+            QMessageBox.information(
+                self, "Sin medición activa", "Inicia una medición antes de guardar sus datos."
+            )
             return
-
-        filename, _ = QFileDialog.getSaveFileName(
-            self, "Guardar datos ECG", "ecg_datos.csv", "Archivos CSV (*.csv)"
+        measurement = self.active_measurement
+        started_at = measurement["started_at"]
+        session_type = str(measurement["tipo"])
+        subject_name = str(measurement["nombre"])
+        session_labels = {
+            "Antes de ejercicio": "AntesEjercicio",
+            "Después de ejercicio": "DespuesEjercicio",
+            "Reposo": "Reposo",
+            "Otro": "Otro",
+        }
+        name_component = unicodedata.normalize("NFKD", subject_name)
+        name_component = name_component.encode("ascii", "ignore").decode("ascii")
+        name_component = re.sub(r"[^A-Za-z0-9]+", "", name_component) or str(
+            measurement["subject_id"]
         )
-        if not filename:
-            return
+        timestamp_label = started_at.strftime("%Y%m%d_%H%M%S")
+        base_name = (
+            f"{name_component}_{session_labels.get(session_type, 'Otro')}_{timestamp_label}"
+        )
+        duration = max(0.0, time.monotonic() - measurement["started_monotonic"])
+        bpm_values = self.measurement_bpms
+        bpm_average = round(mean(bpm_values)) if bpm_values else None
+        bpm_minimum = min(bpm_values) if bpm_values else None
+        bpm_maximum = max(bpm_values) if bpm_values else None
+        session_id = (
+            f"{measurement['subject_id']}_{started_at.strftime('%Y%m%d_%H%M%S_%f')}"
+        )
+
         try:
-            self.csv_file = open(filename, "w", newline="", encoding="utf-8")
-            self.csv_writer = csv.writer(self.csv_file)
-            self.csv_writer.writerow(["fecha_hora", "valor", "leads"])
+            self.measurements_directory.mkdir(parents=True, exist_ok=True)
+            csv_path = self.measurements_directory / f"{base_name}.csv"
+            suffix = 2
+            while csv_path.exists():
+                csv_path = self.measurements_directory / f"{base_name}_{suffix}.csv"
+                suffix += 1
+            with csv_path.open("w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file)
+                writer.writerow(
+                    [
+                        "Nombre",
+                        "Edad",
+                        "Sexo",
+                        "Peso_kg",
+                        "Altura_cm",
+                        "IMC",
+                        "Fumador",
+                        "Cafeina_Hoy",
+                        "Tipo_Sesion",
+                        "Fecha",
+                        "BPM_Promedio",
+                        "BPM_Min",
+                        "BPM_Max",
+                        "Duracion_seg",
+                    ]
+                )
+                writer.writerow(
+                    [
+                        subject_name,
+                        measurement["edad"],
+                        measurement["sexo"],
+                        measurement["peso_kg"] or "",
+                        measurement["altura_cm"] or "",
+                        measurement["imc"] or "",
+                        measurement["fumador"],
+                        measurement["cafeina_hoy"],
+                        session_type,
+                        started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                        bpm_average if bpm_average is not None else "",
+                        bpm_minimum if bpm_minimum is not None else "",
+                        bpm_maximum if bpm_maximum is not None else "",
+                        round(duration, 2),
+
+                    ]
+                )
+                writer.writerow(["timestamp", "valor_ADC", "leads_state"])
+                writer.writerows(self.measurement_samples)
+
+            relative_csv_path = csv_path.relative_to(self.project_directory).as_posix()
+            session = {
+                "id": session_id,
+                "tipo": session_type,
+                "fecha": started_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "fecha_fin": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "duracion_segundos": round(duration, 2),
+                "bpm_promedio": bpm_average,
+                "bpm_min": bpm_minimum,
+                "bpm_max": bpm_maximum,
+                "csv_path": relative_csv_path,
+            }
+            self.subject_store.add_session(str(measurement["subject_id"]), session)
         except OSError as exc:
-            self.csv_file = None
-            self.csv_writer = None
-            QMessageBox.critical(self, "Error al guardar", f"No se pudo crear el archivo:\n{exc}")
+            QMessageBox.critical(
+                self, "Error al guardar", f"No se pudo guardar la medición:\n{exc}"
+            )
+            return
+        except (ValueError, KeyError) as exc:
+            QMessageBox.critical(
+                self,
+                "Error al registrar sesión",
+                f"El CSV puede haberse creado, pero no se pudo actualizar sujetos.json:\n{exc}",
+            )
             return
 
-        self.save_button.setText("Detener CSV")
-
-    def _stop_csv_recording(self) -> None:
-        if self.csv_file is not None:
-            self.csv_file.close()
-        self.csv_file = None
-        self.csv_writer = None
+        self.active_measurement = None
+        self.measurement_samples = []
+        self.measurement_bpms = []
         self.save_button.setText("Guardar CSV")
+        self.message_label.setText(f"Medición guardada: {relative_csv_path}")
+        self._refresh_subject_selector(str(measurement["subject_id"]))
+        QMessageBox.information(
+            self,
+            "Medición guardada",
+            f"Sesión registrada correctamente.\nArchivo: {relative_csv_path}",
+        )
 
     def closeEvent(self, event) -> None:
+        if self.active_measurement is not None:
+            answer = QMessageBox.question(
+                self,
+                "Medición activa",
+                "Hay una medición sin guardar. ¿Deseas finalizarla y guardar el CSV antes de salir?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+            )
+            if answer == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if answer == QMessageBox.StandardButton.Yes:
+                self.toggle_csv_recording()
+                if self.active_measurement is not None:
+                    event.ignore()
+                    return
+            else:
+                self.active_measurement = None
         if self.reader is not None and self.reader.isRunning():
             self.reader.stop()
             self.reader.wait()
-        self._stop_csv_recording()
         event.accept()
 
 
