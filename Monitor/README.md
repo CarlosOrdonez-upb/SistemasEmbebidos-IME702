@@ -130,7 +130,7 @@ Se realizó una prueba de precisión comparando el monitor ECG con el pulsómetr
 | Monitor ECG (AD8232 + ESP32) | 92 |
 | Pulsómetro de smartphone (PPG) | 90 |
 
-El error absoluto fue de **2 BPM** y el error relativo fue de aproximadamente **4%** respecto a la lectura del teléfono. Para un dispositivo de bajo costo (aproximadamente $200MXN en componentes), un error menor al 5% frente a un sensor PPG comercial es aceptable en este contexto educativo, considerando que los pulsómetros de smartphone suelen tener un margen típico de ±5–10%.
+El error absoluto fue de **2 BPM** y el error relativo fue de aproximadamente **4%** respecto a la lectura del teléfono. Para un dispositivo de bajo costo (aproximadamente $400 a $590 MXN en componentes), un error menor al 5% frente a un sensor PPG comercial es aceptable en este contexto educativo, considerando que los pulsómetros de smartphone suelen tener un margen típico de ±5–10%.
 
 ![Monitor ECG en ejecución](images/monitor_corriendo.gif)
 
