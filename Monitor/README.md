@@ -217,7 +217,7 @@ Los datos de salud son sensibles. Los participantes deben otorgar su consentimie
 
 ## Autores y licencia
 
-© 2026 Equipo de Sistemas Embebidos (Carlos Ordóñez, Jorge Negrete, Iván Hernandez, Karol Villagomez, Francisco Cadena).
+© 2026 Equipo de Sistemas Embebidos (Carlos Ordóñez, Jorge Negrete, Iván Hernandez, Karol Villagomez, Francisco Cadena, Diego Gomez).
 
 **Todos los derechos reservados.**
 
