@@ -27,7 +27,7 @@ Repositorio dedicado al desarrollo, documentación y simulación de proyectos de
 | <img src="sources/carlos.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Coach (Líder)</b></sub> | <img src="sources/karol.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Documentación</b></sub> | <img src="sources/negrete.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Logística</b></sub> | <img src="sources/ivan.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Prototipador</b></sub> | <img src="sources/francisco.jpg" width="120" height="120" style="border-radius:15px;"><br><sub><b>Investigación</b></sub> |
 | :---: | :---: | :---: | :---: | :---: |
 | **Jose Carlos Ordoñez Bravo** | **Karol Maria Guadalupe Carrion Villagomez** | **Jorge Alberto Negrete Garnica** | **Carlos Iván Herandez Castro** | **José Francisco Cadena Martinez** |
-| *"Se mira bien ...!"* | *"Que son 13 !!"* | *"Ya pedí todo en MercadoLibre"* | *"Si quieres, yo lo hago"* | *"¿Alguien va al Oxxo?"* |
+| *"Yo lo programo!"* | *"Chequen el diagrama bien"* | *"Ya pedí todo en MercadoLibre"* | *"Si quieres, yo lo conecto"* | *"¿Como van esas conexiones?"* |
 
 ---
 
