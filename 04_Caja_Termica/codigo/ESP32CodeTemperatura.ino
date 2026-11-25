@@ -9,14 +9,16 @@
 #define DEBUG_PRINT(...) do {} while (0)
 #endif
 
+
+
 const uint8_t PIN_LM35 = 34;
-const uint8_t PIN_POT_MIN = 32;
-const uint8_t PIN_POT_MAX = 33;
 const uint8_t PIN_FOCO = 5;
 const uint8_t PIN_PELTIER = 19;
 const uint8_t PIN_FANS = 18;
 const uint8_t PIN_SERVO_TAPA_1 = 22;
 const uint8_t PIN_SERVO_TAPA_2 = 23;
+const uint8_t PIN_TECLADO_FILAS[4] = {13, 14, 26, 27};
+const uint8_t PIN_TECLADO_COLUMNAS[4] = {25, 33, 32, 4};
 
 const uint8_t SERVO_CERRADO = 0;
 const uint8_t SERVO_ABIERTO = 160;
@@ -26,8 +28,10 @@ const float TEMPERATURA_SENSOR_MINIMA = 10.0f;
 const float TEMPERATURA_SENSOR_MAXIMA = 60.0f;
 const float DIFERENCIA_PURGA_AUTOMATICA = 2.5f;
 
-const unsigned long INTERVALO_SENSOR_MS = 2000;
-const unsigned long INTERVALO_ESTADO_MS = 500;
+const unsigned long INTERVALO_SENSOR_MS = 500;
+const unsigned long INTERVALO_ESTADO_MS = 250;
+const unsigned long INTERVALO_TECLADO_MS = 5;
+const unsigned long ANTIRREBOTE_TECLADO_MS = 35;
 const unsigned long ESPERA_APERTURA_MS = 1250;
 const unsigned long TIEMPO_VENTILACION_MS = 20000;
 const unsigned long TIEMPO_SERVO_MS = 400;
@@ -51,6 +55,12 @@ enum ModoTermico {
   MODO_ENFRIAR
 };
 
+enum CampoRango {
+  SIN_EDICION,
+  EDITANDO_MINIMO,
+  EDITANDO_MAXIMO
+};
+
 Servo servoTapa1;
 Servo servoTapa2;
 
@@ -61,8 +71,9 @@ float tempMinima = 28.0f;
 float tempMaxima = 35.0f;
 float temperaturaActual = NAN;
 float humedadActual = NAN;
-float ultimaTempMinimaEnviada = NAN;
-float ultimaTempMaximaEnviada = NAN;
+CampoRango campoRangoEnEdicion = SIN_EDICION;
+char bufferEntradaRango[6];
+size_t longitudEntradaRango = 0;
 bool sensorValido = false;
 bool primeraLectura = true;
 bool modoPrueba = false;
@@ -78,6 +89,7 @@ char bufferComando[48];
 size_t indiceComando = 0;
 unsigned long ultimoSensorMs = 0;
 unsigned long ultimoEstadoMs = 0;
+unsigned long ultimoEscaneoTecladoMs = 0;
 unsigned long inicioFaseMs = 0;
 unsigned long ultimoComandoMs = 0;
 unsigned long inicioFocoMs = 0;
@@ -156,39 +168,6 @@ void actualizarRiesgoPuntoRocio(float temperatura, float humedad) {
     Serial.println("WARN,DEWPOINT,CLEAR");
   }
   riesgoPuntoRocio = riesgoActual;
-}
-
-void actualizarLimitesDesdePotenciometros() {
-  float milivoltiosMin = static_cast<float>(analogReadMilliVolts(PIN_POT_MIN));
-  float milivoltiosMax = static_cast<float>(analogReadMilliVolts(PIN_POT_MAX));
-  milivoltiosMin = fminf(3300.0f, fmaxf(0.0f, milivoltiosMin));
-  milivoltiosMax = fminf(3300.0f, fmaxf(0.0f, milivoltiosMax));
-
-  float nuevaTempMinima = TEMPERATURA_CONFIG_MINIMA +
-      milivoltiosMin * (TEMPERATURA_CONFIG_MAXIMA -
-                        TEMPERATURA_CONFIG_MINIMA) / 3300.0f;
-  float nuevaTempMaxima = TEMPERATURA_CONFIG_MINIMA +
-      milivoltiosMax * (TEMPERATURA_CONFIG_MAXIMA -
-                        TEMPERATURA_CONFIG_MINIMA) / 3300.0f;
-
-  nuevaTempMinima = fminf(nuevaTempMinima,
-                          TEMPERATURA_CONFIG_MAXIMA - 2.0f);
-  nuevaTempMaxima = fmaxf(nuevaTempMaxima, nuevaTempMinima + 2.0f);
-
-  if (!isfinite(ultimaTempMinimaEnviada) ||
-      !isfinite(ultimaTempMaximaEnviada) ||
-      fabsf(nuevaTempMinima - ultimaTempMinimaEnviada) > 0.5f ||
-      fabsf(nuevaTempMaxima - ultimaTempMaximaEnviada) > 0.5f) {
-    tempMinima = nuevaTempMinima;
-    tempMaxima = nuevaTempMaxima;
-    ultimaTempMinimaEnviada = tempMinima;
-    ultimaTempMaximaEnviada = tempMaxima;
-
-    Serial.print("ACK,SETRANGE,");
-    Serial.print(tempMinima, 1);
-    Serial.print(',');
-    Serial.println(tempMaxima, 1);
-  }
 }
 
 void limitarTiempoSalidas(bool &foco, bool &peltier, unsigned long ahora) {
@@ -297,12 +276,225 @@ void detenerControl() {
   escribirSalidas(false, false, false);
 }
 
+const char *nombreCampoRango(CampoRango campo) {
+  return campo == EDITANDO_MINIMO ? "MIN" : "MAX";
+}
+
+void informarEdicionRango() {
+  Serial.print("INFO,KEYPAD,EDIT,");
+  Serial.print(nombreCampoRango(campoRangoEnEdicion));
+  Serial.print(',');
+  Serial.println(bufferEntradaRango);
+}
+
+void cancelarEdicionRango() {
+  if (campoRangoEnEdicion == SIN_EDICION) {
+    return;
+  }
+  campoRangoEnEdicion = SIN_EDICION;
+  longitudEntradaRango = 0;
+  bufferEntradaRango[0] = '\0';
+  Serial.println("INFO,KEYPAD,CANCELLED");
+}
+
+void iniciarEdicionRango(CampoRango campo) {
+  if (cicloActivo || modoPrueba || fase != NORMAL) {
+    Serial.println("ERR,KEYPAD,BUSY");
+    return;
+  }
+  campoRangoEnEdicion = campo;
+  longitudEntradaRango = 0;
+  bufferEntradaRango[0] = '\0';
+  informarEdicionRango();
+}
+
+void agregarDigitoRango(char digito) {
+  if (campoRangoEnEdicion == SIN_EDICION) {
+    return;
+  }
+
+  const char *decimal = strchr(bufferEntradaRango, '.');
+  size_t digitosEnteros = decimal == NULL
+      ? longitudEntradaRango
+      : static_cast<size_t>(decimal - bufferEntradaRango);
+  size_t digitosDecimales = decimal == NULL
+      ? 0
+      : longitudEntradaRango - digitosEnteros - 1;
+  if ((decimal == NULL && digitosEnteros >= 2) ||
+      (decimal != NULL && digitosDecimales >= 1)) {
+    Serial.println("ERR,KEYPAD,ENTRY_FULL");
+    return;
+  }
+
+  bufferEntradaRango[longitudEntradaRango++] = digito;
+  bufferEntradaRango[longitudEntradaRango] = '\0';
+  informarEdicionRango();
+}
+
+void agregarDecimalRango() {
+  if (campoRangoEnEdicion == SIN_EDICION) {
+    return;
+  }
+  if (longitudEntradaRango == 0 ||
+      strchr(bufferEntradaRango, '.') != NULL ||
+      longitudEntradaRango >= sizeof(bufferEntradaRango) - 1) {
+    Serial.println("ERR,KEYPAD,FORMAT");
+    return;
+  }
+  bufferEntradaRango[longitudEntradaRango++] = '.';
+  bufferEntradaRango[longitudEntradaRango] = '\0';
+  informarEdicionRango();
+}
+
+void confirmarEdicionRango() {
+  if (campoRangoEnEdicion == SIN_EDICION) {
+    return;
+  }
+
+  const char *decimal = strchr(bufferEntradaRango, '.');
+  char *finValor;
+  float nuevoValor = strtof(bufferEntradaRango, &finValor);
+  if (longitudEntradaRango == 0 || finValor == bufferEntradaRango ||
+      *finValor != '\0' ||
+      (decimal != NULL && decimal[1] == '\0') ||
+      !isfinite(nuevoValor) ||
+      nuevoValor < TEMPERATURA_CONFIG_MINIMA ||
+      nuevoValor > TEMPERATURA_CONFIG_MAXIMA) {
+    Serial.println("ERR,SETRANGE,FORMAT");
+    return;
+  }
+
+  float nuevaMinima = campoRangoEnEdicion == EDITANDO_MINIMO
+      ? nuevoValor : tempMinima;
+  float nuevaMaxima = campoRangoEnEdicion == EDITANDO_MAXIMO
+      ? nuevoValor : tempMaxima;
+  if (nuevaMinima + 2.0f > nuevaMaxima) {
+    Serial.println("ERR,SETRANGE,RANGE");
+    return;
+  }
+
+  CampoRango campoConfirmado = campoRangoEnEdicion;
+  tempMinima = nuevaMinima;
+  tempMaxima = nuevaMaxima;
+  campoRangoEnEdicion = SIN_EDICION;
+  longitudEntradaRango = 0;
+  bufferEntradaRango[0] = '\0';
+  Serial.print("ACK,SETRANGE,");
+  Serial.print(tempMinima, 1);
+  Serial.print(',');
+  Serial.println(tempMaxima, 1);
+  Serial.print("INFO,KEYPAD,SAVED,");
+  Serial.println(nombreCampoRango(campoConfirmado));
+}
+
+char leerTeclaMatriz() {
+  const char teclas[4][4] = {
+    {'1', '2', '3', 'A'},
+    {'4', '5', '6', 'B'},
+    {'7', '8', '9', 'C'},
+    {'*', '0', '#', 'D'}
+  };
+  char teclaDetectada = '\0';
+  uint8_t teclasPresionadas = 0;
+
+  for (uint8_t fila = 0; fila < 4; fila++) {
+    for (uint8_t otraFila = 0; otraFila < 4; otraFila++) {
+      pinMode(PIN_TECLADO_FILAS[otraFila], INPUT);
+    }
+    pinMode(PIN_TECLADO_FILAS[fila], OUTPUT);
+    digitalWrite(PIN_TECLADO_FILAS[fila], LOW);
+    delayMicroseconds(3);
+
+    for (uint8_t columna = 0; columna < 4; columna++) {
+      if (digitalRead(PIN_TECLADO_COLUMNAS[columna]) == LOW) {
+        teclaDetectada = teclas[fila][columna];
+        teclasPresionadas++;
+      }
+    }
+  }
+
+  for (uint8_t fila = 0; fila < 4; fila++) {
+    pinMode(PIN_TECLADO_FILAS[fila], INPUT);
+  }
+  return teclasPresionadas == 1 ? teclaDetectada : '\0';
+}
+
+void procesarComando(char *comando, unsigned long ahora);
+
+void procesarTecla(char tecla, unsigned long ahora) {
+  char comando[16];
+  switch (tecla) {
+    case 'A':
+      iniciarEdicionRango(EDITANDO_MINIMO);
+      return;
+    case 'B':
+      iniciarEdicionRango(EDITANDO_MAXIMO);
+      return;
+    case 'C':
+      if (campoRangoEnEdicion != SIN_EDICION) {
+        Serial.println("ERR,KEYPAD,FINISH_ENTRY");
+        return;
+      }
+      strcpy(comando, "CYCLE,MIN");
+      break;
+    case 'D':
+      cancelarEdicionRango();
+      strcpy(comando, "STOP");
+      break;
+    case '*':
+      agregarDecimalRango();
+      return;
+    case '#':
+      confirmarEdicionRango();
+      return;
+    default:
+      if (tecla >= '0' && tecla <= '9') {
+        agregarDigitoRango(tecla);
+      }
+      return;
+  }
+  procesarComando(comando, ahora);
+}
+
+void escanearTeclado(unsigned long ahora) {
+  static char teclaCandidata = '\0';
+  static char teclaEstable = '\0';
+  static unsigned long inicioCandidataMs = 0;
+
+  if (ahora - ultimoEscaneoTecladoMs < INTERVALO_TECLADO_MS) {
+    return;
+  }
+  ultimoEscaneoTecladoMs = ahora;
+
+  char lectura = leerTeclaMatriz();
+  if (lectura != teclaCandidata) {
+    teclaCandidata = lectura;
+    inicioCandidataMs = ahora;
+  }
+  if (lectura == teclaEstable ||
+      ahora - inicioCandidataMs < ANTIRREBOTE_TECLADO_MS) {
+    return;
+  }
+
+  teclaEstable = lectura;
+  if (teclaEstable != '\0') {
+    procesarTecla(teclaEstable, ahora);
+  }
+}
+
 void procesarComando(char *comando, unsigned long ahora) {
   ultimoComandoMs = ahora;
   timeoutComunicacionReportado = false;
+  if (strncmp(comando, "KEY,", 4) == 0 && comando[5] == '\0') {
+    procesarTecla(comando[4], ahora);
+    return;
+  }
+
   if (strcmp(comando, "TEST,1") == 0 || strcmp(comando, "TEST,0") == 0) {
     bool activar = comando[5] == '1';
-    if (activar && (cicloActivo || fase != NORMAL)) {
+    if (activar &&
+        (cicloActivo || fase != NORMAL ||
+         campoRangoEnEdicion != SIN_EDICION)) {
       Serial.println("ERR,TEST,BUSY");
       return;
     }
@@ -326,6 +518,10 @@ void procesarComando(char *comando, unsigned long ahora) {
   }
 
   if (strcmp(comando, "PURGE") == 0) {
+    if (campoRangoEnEdicion != SIN_EDICION) {
+      Serial.println("ERR,PURGE,BUSY");
+      return;
+    }
     if (!sensorValido) {
       Serial.println("ERR,PURGE,SENSOR");
       return;
@@ -344,6 +540,7 @@ void procesarComando(char *comando, unsigned long ahora) {
   }
 
   if (strcmp(comando, "STOP") == 0) {
+    cancelarEdicionRango();
     detenerControl();
     Serial.println("ACK,STOP,OK");
     return;
@@ -359,7 +556,8 @@ void procesarComando(char *comando, unsigned long ahora) {
       Serial.println("ERR,CYCLE,TESTING");
       return;
     }
-    if (fase != NORMAL || cicloActivo) {
+    if (fase != NORMAL || cicloActivo ||
+        campoRangoEnEdicion != SIN_EDICION) {
       Serial.println("ERR,CYCLE,BUSY");
       return;
     }
@@ -377,6 +575,7 @@ void procesarComando(char *comando, unsigned long ahora) {
     Serial.println("ERR,SETRANGE,BUSY");
     return;
   }
+  cancelarEdicionRango();
 
   char *finMinima;
   float nuevaMinima = strtof(comando + 9, &finMinima);
@@ -658,6 +857,13 @@ void enviarEstado(unsigned long ahora) {
 void setup() {
   Serial.begin(115200);
 
+  for (uint8_t fila = 0; fila < 4; fila++) {
+    pinMode(PIN_TECLADO_FILAS[fila], INPUT);
+  }
+  for (uint8_t columna = 0; columna < 4; columna++) {
+    pinMode(PIN_TECLADO_COLUMNAS[columna], INPUT_PULLUP);
+  }
+
   pinMode(PIN_FOCO, OUTPUT);
   pinMode(PIN_PELTIER, OUTPUT);
   pinMode(PIN_FANS, OUTPUT);
@@ -674,8 +880,8 @@ void setup() {
 void loop() {
   unsigned long ahora = millis();
   leerComandos(ahora);
+  escanearTeclado(ahora);
   actualizarTimeoutComunicacion(ahora);
-  actualizarLimitesDesdePotenciometros();
   actualizarSensor(ahora);
   actualizarPurga(ahora);
   actualizarControlTermico();
