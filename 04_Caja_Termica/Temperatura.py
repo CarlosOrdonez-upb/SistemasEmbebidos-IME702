@@ -1,9 +1,11 @@
 import sys
 import math
+from functools import partial
 import serial
 from serial.tools import list_ports
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton, 
+                             QHBoxLayout, QGridLayout, QLabel, QDoubleSpinBox,
+                             QPushButton, QScrollArea,
                              QComboBox, QDialog,
                              QMessageBox,
                              QGraphicsView, QGraphicsScene, QGraphicsRectItem, 
@@ -18,7 +20,7 @@ class SimulacionCuarto(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Control de Cámara Térmica - Simulación")
-        self.resize(900, 600)
+        self.resize(1000, 800)
 
         self.arduino = None
         self.sensor_valido = False
@@ -33,6 +35,7 @@ class SimulacionCuarto(QMainWindow):
         self.ciclo_activo = False
         self.ciclo_soportado = False
         self.temperatura_actual = None
+        self.edicion_teclado_activa = False
         self.dialogo_purga = None
         self.lbl_detalle_purga = None
         self.lbl_cuenta_purga = None
@@ -115,7 +118,11 @@ class SimulacionCuarto(QMainWindow):
         control_layout = QVBoxLayout(control_panel)
         control_layout.setContentsMargins(4, 4, 4, 4)
         control_layout.setSpacing(10)
-        main_layout.addWidget(control_panel, 1)
+        control_scroll = QScrollArea()
+        control_scroll.setWidgetResizable(True)
+        control_scroll.setFrameShape(QScrollArea.NoFrame)
+        control_scroll.setWidget(control_panel)
+        main_layout.addWidget(control_scroll, 1)
 
         titulo = QLabel("CÁMARA TÉRMICA")
         titulo.setObjectName("titulo")
@@ -162,25 +169,69 @@ class SimulacionCuarto(QMainWindow):
         ciclo_layout = QHBoxLayout()
         ciclo_layout.addWidget(self.boton_iniciar_ciclo)
         ciclo_layout.addWidget(self.boton_detener_ciclo)
+
+        self.teclas_virtuales = {}
+        distribucion_teclado = QGridLayout()
+        distribucion_teclado.setSpacing(5)
+        teclas = (
+            ("1", "2", "3", "A"),
+            ("4", "5", "6", "B"),
+            ("7", "8", "9", "C"),
+            ("*", "0", "#", "D"),
+        )
+        acciones_teclas = {
+            "A": "Seleccionar y editar la temperatura mínima",
+            "B": "Seleccionar y editar la temperatura máxima",
+            "C": "Iniciar el ciclo, primero hacia la temperatura mínima",
+            "D": "Detener el ciclo o cancelar la edición",
+            "*": "Escribir el separador decimal",
+            "#": "Aceptar el límite introducido",
+        }
+        for fila, teclas_fila in enumerate(teclas):
+            for columna, tecla in enumerate(teclas_fila):
+                boton = QPushButton(tecla)
+                boton.setMinimumHeight(36)
+                boton.setToolTip(acciones_teclas.get(
+                    tecla, f"Introducir el dígito {tecla}"
+                ))
+                boton.setEnabled(False)
+                boton.clicked.connect(
+                    partial(self.enviar_tecla_virtual, tecla)
+                )
+                self.teclas_virtuales[tecla] = boton
+                if tecla.isdigit():
+                    boton.setObjectName("secundario")
+                distribucion_teclado.addWidget(boton, fila, columna)
+        leyenda_teclado = QLabel(
+            "A: mínima · B: máxima · C: iniciar · D: detener · "
+            "*: decimal · #: aceptar"
+        )
+        leyenda_teclado.setWordWrap(True)
+        self.lbl_estado_teclado = QLabel("Teclado: listo")
+        self.lbl_estado_teclado.setWordWrap(True)
         
         self.lbl_rango = QLabel("RANGO DE TEMPERATURA")
         self.lbl_temp_minima = QLabel("Temperatura mínima")
         self.spin_temp_minima = QDoubleSpinBox()
-        self.spin_temp_minima.setRange(20.0, 59.5)
+        self.spin_temp_minima.setRange(20.0, 58.0)
         self.spin_temp_minima.setValue(28.0)
         self.spin_temp_minima.setSingleStep(0.5)
         self.spin_temp_minima.setSuffix(" °C")
-        self.spin_temp_minima.setToolTip("Rango permitido: 20–59.5 °C")
+        self.spin_temp_minima.setToolTip(
+            "Rango permitido: 20–58 °C; deja al menos 2 °C hasta la máxima"
+        )
         self.spin_temp_minima.valueChanged.connect(
             self.actualizar_temperatura_minima
         )
         self.lbl_temp_maxima = QLabel("Temperatura máxima")
         self.spin_temp_maxima = QDoubleSpinBox()
-        self.spin_temp_maxima.setRange(20.5, 60.0)
+        self.spin_temp_maxima.setRange(22.0, 60.0)
         self.spin_temp_maxima.setValue(35.0)
         self.spin_temp_maxima.setSingleStep(0.5)
         self.spin_temp_maxima.setSuffix(" °C")
-        self.spin_temp_maxima.setToolTip("Rango permitido: 20.5–60 °C")
+        self.spin_temp_maxima.setToolTip(
+            "Rango permitido: 22–60 °C; deja al menos 2 °C desde la mínima"
+        )
         self.spin_temp_maxima.valueChanged.connect(
             self.actualizar_temperatura_maxima
         )
@@ -209,6 +260,10 @@ class SimulacionCuarto(QMainWindow):
         control_layout.addWidget(self.boton_prueba_conexion)
         control_layout.addWidget(self.boton_purga)
         control_layout.addLayout(ciclo_layout)
+        control_layout.addWidget(QLabel("TECLADO"))
+        control_layout.addLayout(distribucion_teclado)
+        control_layout.addWidget(leyenda_teclado)
+        control_layout.addWidget(self.lbl_estado_teclado)
         control_layout.addSpacing(8)
         control_layout.addWidget(self.lbl_rango)
         control_layout.addLayout(rango_layout)
@@ -588,6 +643,7 @@ class SimulacionCuarto(QMainWindow):
             self.purga_soportada = False
             self.ciclo_soportado = False
             self.ciclo_activo = False
+            self.edicion_teclado_activa = False
             self.boton_conexion.setText("Conectar")
             self.combo_puertos.setEnabled(True)
             self.boton_prueba_conexion.setEnabled(False)
@@ -615,6 +671,7 @@ class SimulacionCuarto(QMainWindow):
             self.purga_soportada = False
             self.ciclo_soportado = False
             self.ciclo_activo = False
+            self.edicion_teclado_activa = False
             self.actualizar_botones_ciclo()
         except (serial.SerialException, OSError) as error:
             self.arduino = None
@@ -640,6 +697,7 @@ class SimulacionCuarto(QMainWindow):
                 self.purga_soportada = False
                 self.ciclo_soportado = False
                 self.ciclo_activo = False
+                self.edicion_teclado_activa = False
                 self.boton_conexion.setText("Conectar")
                 self.combo_puertos.setEnabled(True)
                 self.boton_prueba_conexion.setEnabled(False)
@@ -647,6 +705,35 @@ class SimulacionCuarto(QMainWindow):
                 self.actualizar_botones_ciclo()
                 self.prueba_conexion_activa = False
                 self.actualizar_boton_prueba()
+        self.actualizar_botones_teclado()
+
+    def actualizar_botones_teclado(self):
+        conectado = self.arduino is not None and self.arduino.is_open
+        seleccion_disponible = (
+            conectado
+            and not self.ciclo_activo
+            and not self.prueba_conexion_activa
+            and self.modo_termico != "PURGA"
+            and self.modo_termico != "ERROR"
+        )
+        iniciar_disponible = (
+            conectado
+            and self.sensor_valido
+            and self.ciclo_soportado
+            and not self.ciclo_activo
+            and not self.prueba_conexion_activa
+            and self.modo_termico != "PURGA"
+        )
+        for tecla, boton in self.teclas_virtuales.items():
+            if tecla in ("A", "B"):
+                disponible = seleccion_disponible
+            elif tecla == "C":
+                disponible = iniciar_disponible
+            elif tecla == "D":
+                disponible = conectado
+            else:
+                disponible = conectado and self.edicion_teclado_activa
+            boton.setEnabled(disponible)
 
     def actualizar_rango_interfaz(self, temp_minima, temp_maxima):
         if (
@@ -669,6 +756,48 @@ class SimulacionCuarto(QMainWindow):
 
     def procesar_linea(self, linea):
         partes = linea.split(",")
+        if len(partes) >= 3 and partes[:2] == ["INFO", "KEYPAD"]:
+            if partes[2] == "EDIT" and len(partes) == 5:
+                self.edicion_teclado_activa = True
+                etiqueta = (
+                    "mínima" if partes[3] == "MIN" else "máxima"
+                )
+                valor = partes[4] or "--"
+                self.lbl_estado_teclado.setText(
+                    f"Editando temperatura {etiqueta}: {valor} °C; "
+                    "# para aceptar"
+                )
+            elif partes[2] == "CANCELLED":
+                self.edicion_teclado_activa = False
+                self.lbl_estado_teclado.setText("Teclado: edición cancelada")
+            elif partes[2] == "SAVED":
+                self.edicion_teclado_activa = False
+                etiqueta = (
+                    "mínima" if len(partes) > 3 and partes[3] == "MIN"
+                    else "máxima"
+                )
+                self.lbl_estado_teclado.setText(
+                    f"Temperatura {etiqueta} guardada"
+                )
+            self.actualizar_botones_teclado()
+            return
+        if len(partes) >= 3 and partes[0] == "ERR" and partes[1] == "KEYPAD":
+            errores_teclado = {
+                "BUSY": "No se puede editar durante el ciclo, purga o prueba",
+                "ENTRY_FULL": "Máximo dos enteros y un decimal",
+                "FINISH_ENTRY": "Confirma o cancela el valor antes de iniciar",
+                "FORMAT": "Entrada decimal no válida",
+            }
+            self.lbl_estado_teclado.setText(
+                errores_teclado.get(partes[2], f"Error de teclado: {partes[2]}")
+            )
+            return
+        if len(partes) >= 3 and partes[:2] == ["ERR", "SETRANGE"]:
+            self.lbl_estado_teclado.setText(
+                "Rango inválido: debe estar entre 20 y 60 °C "
+                "y separado al menos 2 °C"
+            )
+            return
         if len(partes) >= 3 and partes[0] == "WARN" and partes[1] == "DEWPOINT":
             if partes[2] == "RISK" and len(partes) == 5:
                 try:
@@ -685,7 +814,9 @@ class SimulacionCuarto(QMainWindow):
                 temp_maxima = float(partes[3])
             except ValueError:
                 return
+            self.edicion_teclado_activa = False
             self.actualizar_rango_interfaz(temp_minima, temp_maxima)
+            self.actualizar_botones_teclado()
             return
         if len(partes) >= 3 and partes[0] == "ACK" and partes[1] == "PURGE":
             self.lbl_estado.setText("Estado: Purga de aire iniciada")
@@ -720,8 +851,19 @@ class SimulacionCuarto(QMainWindow):
                 f"Estado: No se pudo iniciar la prueba ({partes[2]})"
             )
             return
+        if len(partes) == 3 and partes[:2] == ["ACK", "TEST"]:
+            self.prueba_conexion_activa = partes[2] == "ON"
+            self.actualizar_boton_prueba()
+            self.lbl_estado.setText(
+                "Estado: Prueba de conexión activa"
+                if self.prueba_conexion_activa else
+                "Estado: Prueba de conexión detenida"
+            )
+            return
         if len(partes) >= 2 and partes[0] == "ACK" and partes[1] == "STOP":
             self.ciclo_activo = False
+            self.edicion_teclado_activa = False
+            self.lbl_estado_teclado.setText("Teclado: control detenido")
             self.actualizar_boton_prueba()
             self.actualizar_botones_ciclo()
             self.lbl_estado.setText("Estado: Ciclo detenido; salidas apagadas")
@@ -880,16 +1022,16 @@ class SimulacionCuarto(QMainWindow):
         self.halo_peltier.setBrush(QBrush(brillo_peltier))
 
     def actualizar_temperatura_minima(self, valor):
-        if valor >= self.spin_temp_maxima.value():
+        if valor + 2.0 > self.spin_temp_maxima.value():
             anterior = self.spin_temp_maxima.blockSignals(True)
-            self.spin_temp_maxima.setValue(min(valor + 0.5, 60.0))
+            self.spin_temp_maxima.setValue(min(valor + 2.0, 60.0))
             self.spin_temp_maxima.blockSignals(anterior)
         self.enviar_rango_temperatura()
 
     def actualizar_temperatura_maxima(self, valor):
-        if valor <= self.spin_temp_minima.value():
+        if valor - 2.0 < self.spin_temp_minima.value():
             anterior = self.spin_temp_minima.blockSignals(True)
-            self.spin_temp_minima.setValue(max(valor - 0.5, 20.0))
+            self.spin_temp_minima.setValue(max(valor - 2.0, 20.0))
             self.spin_temp_minima.blockSignals(anterior)
         self.enviar_rango_temperatura()
 
@@ -1065,6 +1207,21 @@ class SimulacionCuarto(QMainWindow):
             )
             return False
         return True
+
+    def enviar_tecla_virtual(self, tecla, checked=False):
+        if checked:
+            return
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText(
+                "Estado: Conecta el ESP32 para usar el teclado"
+            )
+            return
+        try:
+            self.arduino.write(f"KEY,{tecla}\n".encode("utf-8"))
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo enviar la tecla {tecla}: {error}"
+            )
 
     def cancelar_cuenta_regresiva_purga(self):
         if self.dialogo_purga is not None:
