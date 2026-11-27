@@ -9,15 +9,17 @@ from serial.tools import list_ports
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QGridLayout, QLabel, QDoubleSpinBox,
                              QPushButton, QScrollArea, QGroupBox,
+                             QAbstractButton,
                              QComboBox, QDialog,
                              QMessageBox,
                              QGraphicsView, QGraphicsScene, QGraphicsRectItem, 
                              QGraphicsEllipseItem, QGraphicsTextItem,
                              QGraphicsItemGroup, QGraphicsPolygonItem,
                              QGraphicsLineItem)
-from PyQt5.QtCore import QTimer, Qt, QPointF
+from PyQt5.QtCore import QEvent, QTimer, Qt, QPointF
 from PyQt5.QtGui import (QBrush, QPen, QColor, QPainter, QPolygonF,
-                         QRadialGradient, QLinearGradient, QPainterPath, QPixmap)
+                         QRadialGradient, QLinearGradient, QPainterPath,
+                         QPixmap, QKeyEvent)
 
 class SimulacionCuarto(QMainWindow):
     def __init__(self):
@@ -35,10 +37,16 @@ class SimulacionCuarto(QMainWindow):
         self.ventiladores_activos = False
         self.puertas_abiertas = False
         self.prueba_conexion_activa = False
+        self.prueba_dimmer_activa = False
+        self.control_pid_activo = False
         self.ciclo_activo = False
         self.ciclo_soportado = False
         self.temperatura_actual = None
+        self.potencia_foco = None
+        self.angulo_servo_dimmer = None
+        self.dimmer_soportado = False
         self.edicion_teclado_activa = False
+        self.modo_teclado_matriz = "A"
         self.dialogo_purga = None
         self.lbl_detalle_purga = None
         self.lbl_cuenta_purga = None
@@ -100,6 +108,9 @@ class SimulacionCuarto(QMainWindow):
             }
             QPushButton:hover { background-color: #1b9bad; }
             QPushButton:pressed { background-color: #116672; }
+            QPushButton:focus, QComboBox:focus, QDoubleSpinBox:focus {
+                border: 2px solid #35c4d2;
+            }
             QPushButton#secundario { background-color: #263744; }
             QPushButton#secundario:hover { background-color: #354b5a; }
         """)
@@ -128,6 +139,7 @@ class SimulacionCuarto(QMainWindow):
         control_scroll.setWidgetResizable(True)
         control_scroll.setFrameShape(QScrollArea.NoFrame)
         control_scroll.setWidget(control_panel)
+        self.control_scroll = control_scroll
         main_layout.addWidget(control_scroll, 1)
 
         titulo = QLabel("CÁMARA TÉRMICA")
@@ -147,6 +159,9 @@ class SimulacionCuarto(QMainWindow):
         humedad_layout.addWidget(self.icono_humedad)
         humedad_layout.addWidget(self.lbl_humedad)
         humedad_layout.addStretch()
+        self.lbl_dimmer = QLabel(
+            "Potencia solicitada al dimmer: --% · Servo comandado: --°"
+        )
 
         self.combo_puertos = QComboBox()
         self.boton_conexion = QPushButton("Conectar")
@@ -154,14 +169,27 @@ class SimulacionCuarto(QMainWindow):
         self.boton_actualizar_puertos = QPushButton("Actualizar puertos")
         self.boton_actualizar_puertos.setObjectName("secundario")
         self.boton_actualizar_puertos.clicked.connect(self.cargar_puertos)
-        self.boton_prueba_conexion = QPushButton("Iniciar prueba de conexión")
+        self.boton_prueba_conexion = QPushButton(
+            "Probar tapas y ventiladores"
+        )
         self.boton_prueba_conexion.setObjectName("secundario")
         self.boton_prueba_conexion.setToolTip(
-            "Abre las compuertas y activa los ventiladores; "
-            "mantiene apagados el calefactor y el Peltier."
+            "Mueve los servos de tapas GPIO 22/23 y solicita HIGH en GPIO 18 "
+            "para los ventiladores. No mueve el servo dimmer GPIO 21."
         )
         self.boton_prueba_conexion.setEnabled(False)
         self.boton_prueba_conexion.clicked.connect(self.alternar_prueba_conexion)
+        self.boton_prueba_dimmer = QPushButton("Probar servo dimmer (GPIO 21)")
+        self.boton_prueba_dimmer.setObjectName("secundario")
+        self.boton_prueba_dimmer.setToolTip(
+            "Con DHT11 válido y control detenido, lleva el dimmer a 50° "
+            "(50% del recorrido) durante un segundo y vuelve a 0°. "
+            "Este es el botón que prueba GPIO 21."
+        )
+        self.boton_prueba_dimmer.setEnabled(False)
+        self.boton_prueba_dimmer.clicked.connect(
+            self.solicitar_prueba_dimmer
+        )
         self.boton_purga = QPushButton("Purga de aire")
         self.boton_purga.setEnabled(False)
         self.boton_purga.clicked.connect(self.solicitar_purga_manual)
@@ -186,57 +214,65 @@ class SimulacionCuarto(QMainWindow):
             ("*", "0", "#", "D"),
         )
         acciones_teclas = {
-            "A": "Seleccionar y editar la temperatura mínima",
-            "B": "Seleccionar y editar la temperatura máxima",
-            "C": "Iniciar el ciclo, primero hacia la temperatura mínima",
-            "D": "Detener el ciclo o cancelar la edición",
-            "*": "Escribir el separador decimal",
-            "#": "Aceptar el límite introducido",
+            "A": "Modo A: mover el foco por la interfaz",
+            "B": "Modo B: escribir un valor numérico",
+            "1": "En modo A: aumentar el control numérico enfocado en 0.5",
+            "2": "En modo A: mover el foco hacia arriba",
+            "3": "En modo A: reducir el control numérico enfocado en 0.5",
+            "4": "En modo A: mover el foco a la izquierda",
+            "6": "En modo A: mover el foco a la derecha",
+            "8": "En modo A: mover el foco hacia abajo",
+            "C": "Iniciar el ciclo térmico hacia la temperatura mínima",
+            "D": "Detener el ciclo y las salidas",
+            "*": "En modo B: escribir el separador decimal",
+            "#": "Seleccionar, abrir un menú o aceptar un valor",
         }
         for fila, teclas_fila in enumerate(teclas):
             for columna, tecla in enumerate(teclas_fila):
                 boton = QPushButton(tecla)
                 boton.setMinimumHeight(36)
+                boton.setFocusPolicy(Qt.NoFocus)
                 boton.setToolTip(acciones_teclas.get(
                     tecla, f"Introducir el dígito {tecla}"
                 ))
                 boton.setEnabled(False)
                 boton.clicked.connect(
-                    partial(self.enviar_tecla_virtual, tecla)
+                    partial(self.procesar_tecla_interfaz, tecla)
                 )
                 self.teclas_virtuales[tecla] = boton
                 if tecla.isdigit():
                     boton.setObjectName("secundario")
                 distribucion_teclado.addWidget(boton, fila, columna)
         leyenda_teclado = QLabel(
-            "A: mínima · B: máxima · C: iniciar · D: detener · "
-            "*: decimal · #: aceptar"
+            "A: mover · 2/4/6/8: navegar · 1/3: ±0.5 · "
+            "B: números · #: seleccionar/aceptar · C: ciclo · D: detener"
         )
         leyenda_teclado.setWordWrap(True)
-        self.lbl_estado_teclado = QLabel("Teclado: listo")
+        self.lbl_estado_teclado = QLabel()
         self.lbl_estado_teclado.setWordWrap(True)
+        self.actualizar_estado_modo_teclado()
         
         self.lbl_rango = QLabel("RANGO DE TEMPERATURA")
         self.lbl_temp_minima = QLabel("Temperatura mínima")
         self.spin_temp_minima = QDoubleSpinBox()
-        self.spin_temp_minima.setRange(20.0, 58.0)
+        self.spin_temp_minima.setRange(20.0, 48.0)
         self.spin_temp_minima.setValue(28.0)
         self.spin_temp_minima.setSingleStep(0.5)
         self.spin_temp_minima.setSuffix(" °C")
         self.spin_temp_minima.setToolTip(
-            "Rango permitido: 20–58 °C; deja al menos 2 °C hasta la máxima"
+            "Rango permitido: 20–48 °C; deja al menos 2 °C hasta la máxima"
         )
         self.spin_temp_minima.valueChanged.connect(
             self.actualizar_temperatura_minima
         )
         self.lbl_temp_maxima = QLabel("Temperatura máxima")
         self.spin_temp_maxima = QDoubleSpinBox()
-        self.spin_temp_maxima.setRange(22.0, 60.0)
+        self.spin_temp_maxima.setRange(22.0, 50.0)
         self.spin_temp_maxima.setValue(35.0)
         self.spin_temp_maxima.setSingleStep(0.5)
         self.spin_temp_maxima.setSuffix(" °C")
         self.spin_temp_maxima.setToolTip(
-            "Rango permitido: 22–60 °C; deja al menos 2 °C desde la mínima"
+            "Rango permitido: 22–50 °C; deja al menos 2 °C desde la mínima"
         )
         self.spin_temp_maxima.valueChanged.connect(
             self.actualizar_temperatura_maxima
@@ -251,7 +287,7 @@ class SimulacionCuarto(QMainWindow):
         rango_layout.addLayout(minimo_layout)
         rango_layout.addLayout(maximo_layout)
 
-        # --- Controles PID y gráfica: conservar el teclado matricial existente ---
+        # --- Controles PID y gráfica ---
         pid_group = QGroupBox("Sintonización PID")
         pid_layout = QVBoxLayout(pid_group)
         self.spin_kp = QDoubleSpinBox()
@@ -276,15 +312,28 @@ class SimulacionCuarto(QMainWindow):
         pid_layout.addWidget(self.boton_aplicar_pid)
 
         self.spin_temp_objetivo = QDoubleSpinBox()
-        self.spin_temp_objetivo.setRange(20.0, 60.0)
+        self.spin_temp_objetivo.setRange(20.0, 50.0)
         self.spin_temp_objetivo.setValue(28.0)
         self.spin_temp_objetivo.setSingleStep(0.5)
         self.spin_temp_objetivo.setSuffix(" °C")
         pid_layout.addWidget(QLabel("Temperatura objetivo"))
         pid_layout.addWidget(self.spin_temp_objetivo)
-        self.boton_mantener_temp = QPushButton("Mantener Temperatura (PID)")
+        self.boton_mantener_temp = QPushButton("Mantener temperatura (PID)")
+        self.boton_mantener_temp.setToolTip(
+            "Calienta con el dimmer de GPIO 21 o enfría con la Peltier de "
+            "GPIO 19 según el error. Detén primero el ciclo o las pruebas."
+        )
         self.boton_mantener_temp.clicked.connect(self.mantener_temperatura_pid)
         pid_layout.addWidget(self.boton_mantener_temp)
+        for control in (
+            self.spin_temp_minima,
+            self.spin_temp_maxima,
+            self.spin_kp,
+            self.spin_ki,
+            self.spin_kd,
+            self.spin_temp_objetivo,
+        ):
+            control.setKeyboardTracking(False)
 
         self.plot_widget = pg.PlotWidget(title="Temperatura vs Tiempo")
         self.plot_widget.setLabel("left", "Temperatura", units="°C")
@@ -306,12 +355,14 @@ class SimulacionCuarto(QMainWindow):
         control_layout.addWidget(self.lbl_estado)
         control_layout.addWidget(self.lbl_rango_actual)
         control_layout.addLayout(humedad_layout)
+        control_layout.addWidget(self.lbl_dimmer)
         control_layout.addSpacing(8)
         control_layout.addWidget(QLabel("PUERTO DEL ESP32"))
         control_layout.addWidget(self.combo_puertos)
         control_layout.addWidget(self.boton_conexion)
         control_layout.addWidget(self.boton_actualizar_puertos)
         control_layout.addWidget(self.boton_prueba_conexion)
+        control_layout.addWidget(self.boton_prueba_dimmer)
         control_layout.addWidget(self.boton_purga)
         control_layout.addLayout(ciclo_layout)
         control_layout.addWidget(QLabel("TECLADO"))
@@ -337,6 +388,12 @@ class SimulacionCuarto(QMainWindow):
         self.timer_animacion = QTimer()
         self.timer_animacion.timeout.connect(self.animar_ventiladores)
         self.timer_animacion.start(30)
+
+        self.timer_modo_teclado = QTimer(self)
+        self.timer_modo_teclado.timeout.connect(
+            self.enviar_heartbeat_teclado
+        )
+        self.timer_modo_teclado.start(1000)
 
         self.cargar_puertos()
 
@@ -690,22 +747,36 @@ class SimulacionCuarto(QMainWindow):
         if self.arduino and self.arduino.is_open:
             if self.ciclo_soportado and not self.enviar_comando_detener():
                 return
+            if self.prueba_dimmer_activa and not self.ciclo_soportado:
+                if not self.enviar_comando_detener():
+                    return
             self.cancelar_cuenta_regresiva_purga()
             if self.prueba_conexion_activa:
                 self.enviar_modo_prueba(False)
+            self.enviar_modo_teclado_interfaz(False)
             self.arduino.close()
             self.arduino = None
             self.sensor_valido = False
             self.purga_soportada = False
             self.ciclo_soportado = False
             self.ciclo_activo = False
+            self.prueba_dimmer_activa = False
+            self.control_pid_activo = False
             self.edicion_teclado_activa = False
+            self.modo_teclado_matriz = "A"
+            self.actualizar_estado_modo_teclado()
+            self.boton_prueba_dimmer.setText("Probar servo dimmer (GPIO 21)")
             self.boton_conexion.setText("Conectar")
             self.combo_puertos.setEnabled(True)
             self.boton_prueba_conexion.setEnabled(False)
             self.boton_purga.setEnabled(False)
             self.actualizar_botones_ciclo()
+            self.actualizar_boton_prueba_dimmer()
             self.lbl_estado.setText("Estado: Desconectado")
+            self.potencia_foco = None
+            self.angulo_servo_dimmer = None
+            self.dimmer_soportado = False
+            self.lbl_dimmer.setText("Foco/dimmer: sin conexión")
             return
 
         puerto = self.combo_puertos.currentData()
@@ -724,11 +795,22 @@ class SimulacionCuarto(QMainWindow):
             self.boton_prueba_conexion.setEnabled(True)
             self.boton_purga.setEnabled(False)
             self.lbl_estado.setText(f"Estado: Conectado a {puerto}; esperando datos")
+            self.potencia_foco = None
+            self.angulo_servo_dimmer = None
+            self.dimmer_soportado = False
+            self.lbl_dimmer.setText("Foco/dimmer: esperando firmware")
             self.purga_soportada = False
             self.ciclo_soportado = False
             self.ciclo_activo = False
+            self.prueba_dimmer_activa = False
+            self.control_pid_activo = False
             self.edicion_teclado_activa = False
+            self.modo_teclado_matriz = "A"
+            self.actualizar_estado_modo_teclado()
+            self.boton_prueba_dimmer.setText("Probar servo dimmer (GPIO 21)")
             self.actualizar_botones_ciclo()
+            self.actualizar_boton_prueba_dimmer()
+            self.enviar_modo_teclado_interfaz(True)
         except (serial.SerialException, OSError) as error:
             self.arduino = None
             self.lbl_estado.setText(f"Estado: No se pudo abrir {puerto}: {error}")
@@ -749,7 +831,11 @@ class SimulacionCuarto(QMainWindow):
                             temperatura = float(linea.split(":", 1)[1])
                         except ValueError:
                             continue
-                        if math.isfinite(temperatura):
+                        if math.isfinite(temperatura) and 0.0 <= temperatura <= 50.0:
+                            self.temperatura_actual = temperatura
+                            self.lbl_temp_actual.setText(
+                                f"{temperatura:.0f} °C"
+                            )
                             self.buffer_temp.append(temperatura)
                             self.tiempo_actual += 1
                             self.buffer_time.append(self.tiempo_actual)
@@ -758,6 +844,10 @@ class SimulacionCuarto(QMainWindow):
                         self.procesar_linea(linea)
             except (serial.SerialException, OSError) as error:
                 self.lbl_estado.setText(f"Estado: Error de comunicación: {error}")
+                self.potencia_foco = None
+                self.angulo_servo_dimmer = None
+                self.dimmer_soportado = False
+                self.lbl_dimmer.setText("Foco/dimmer: sin conexión")
                 self.cancelar_cuenta_regresiva_purga()
                 self.arduino.close()
                 self.arduino = None
@@ -765,7 +855,12 @@ class SimulacionCuarto(QMainWindow):
                 self.purga_soportada = False
                 self.ciclo_soportado = False
                 self.ciclo_activo = False
+                self.prueba_dimmer_activa = False
+                self.control_pid_activo = False
                 self.edicion_teclado_activa = False
+                self.modo_teclado_matriz = "A"
+                self.actualizar_estado_modo_teclado()
+                self.boton_prueba_dimmer.setText("Probar servo dimmer (GPIO 21)")
                 self.boton_conexion.setText("Conectar")
                 self.combo_puertos.setEnabled(True)
                 self.boton_prueba_conexion.setEnabled(False)
@@ -773,6 +868,7 @@ class SimulacionCuarto(QMainWindow):
                 self.actualizar_botones_ciclo()
                 self.prueba_conexion_activa = False
                 self.actualizar_boton_prueba()
+                self.actualizar_boton_prueba_dimmer()
         self.actualizar_botones_teclado()
 
     def actualizar_grafica(self):
@@ -804,6 +900,21 @@ class SimulacionCuarto(QMainWindow):
                 "Estado: Conecta el ESP32 para mantener la temperatura"
             )
             return
+        if not self.sensor_valido:
+            self.lbl_estado.setText(
+                "Estado: Esperando una lectura válida del DHT11"
+            )
+            return
+        if (
+            self.ciclo_activo
+            or self.prueba_conexion_activa
+            or self.prueba_dimmer_activa
+            or self.modo_termico in ("PURGA", "ERROR")
+        ):
+            self.lbl_estado.setText(
+                "Estado: Detén el ciclo o la prueba activa antes de iniciar el PID"
+            )
+            return
         try:
             self.arduino.write(
                 f"TEMP_TARGET:{self.spin_temp_objetivo.value()}\n".encode("utf-8")
@@ -815,37 +926,16 @@ class SimulacionCuarto(QMainWindow):
 
     def actualizar_botones_teclado(self):
         conectado = self.arduino is not None and self.arduino.is_open
-        seleccion_disponible = (
-            conectado
-            and not self.ciclo_activo
-            and not self.prueba_conexion_activa
-            and self.modo_termico != "PURGA"
-            and self.modo_termico != "ERROR"
-        )
-        iniciar_disponible = (
-            conectado
-            and self.sensor_valido
-            and self.ciclo_soportado
-            and not self.ciclo_activo
-            and not self.prueba_conexion_activa
-            and self.modo_termico != "PURGA"
-        )
         for tecla, boton in self.teclas_virtuales.items():
-            if tecla in ("A", "B"):
-                disponible = seleccion_disponible
-            elif tecla == "C":
-                disponible = iniciar_disponible
-            elif tecla == "D":
-                disponible = conectado
-            else:
-                disponible = conectado and self.edicion_teclado_activa
-            boton.setEnabled(disponible)
+            boton.setEnabled(conectado if tecla in ("C", "D") else True)
 
     def actualizar_rango_interfaz(self, temp_minima, temp_maxima):
         if (
             not math.isfinite(temp_minima)
             or not math.isfinite(temp_maxima)
-            or temp_minima >= temp_maxima
+            or temp_minima < 20.0
+            or temp_maxima > 50.0
+            or temp_minima + 2.0 > temp_maxima
         ):
             return
 
@@ -860,8 +950,56 @@ class SimulacionCuarto(QMainWindow):
             control.setValue(valor)
             control.blockSignals(anterior)
 
+    def actualizar_estado_dimmer(self, partes):
+        self.potencia_foco = None
+        self.angulo_servo_dimmer = None
+        self.dimmer_soportado = len(partes) == 13
+        if len(partes) != 13:
+            self.lbl_dimmer.setText(
+                "Foco/dimmer: sin telemetría (firmware anterior)"
+            )
+            return
+
+        try:
+            potencia_foco = float(partes[11])
+            angulo_dimmer = int(partes[12])
+        except ValueError:
+            self.lbl_dimmer.setText("Foco/dimmer: telemetría inválida")
+            return
+
+        if (
+            not math.isfinite(potencia_foco)
+            or not 0.0 <= potencia_foco <= 100.0
+            or not 0 <= angulo_dimmer <= 180
+        ):
+            self.lbl_dimmer.setText(
+                "Foco/dimmer: telemetría fuera de rango"
+            )
+            return
+
+        self.potencia_foco = potencia_foco
+        self.angulo_servo_dimmer = angulo_dimmer
+        self.lbl_dimmer.setText(
+            f"Potencia solicitada al dimmer: {potencia_foco:.0f}% · "
+            f"Servo comandado: {angulo_dimmer}°"
+        )
+
     def procesar_linea(self, linea):
         partes = linea.split(",")
+        if partes == ["ACK", "KEYPAD_UI", "ON"]:
+            self.lbl_estado_teclado.setText(
+                "Matriz conectada: Modo A listo"
+            )
+            return
+        if (
+            len(partes) == 2
+            and partes[0] == "KEYPAD_KEY"
+            and len(partes[1]) == 1
+            and partes[1] in "0123456789ABCD*#"
+        ):
+            self.procesar_tecla_interfaz(partes[1])
+            return
+
         if len(partes) >= 3 and partes[:2] == ["INFO", "KEYPAD"]:
             if partes[2] == "EDIT" and len(partes) == 5:
                 self.edicion_teclado_activa = True
@@ -900,8 +1038,44 @@ class SimulacionCuarto(QMainWindow):
             return
         if len(partes) >= 3 and partes[:2] == ["ERR", "SETRANGE"]:
             self.lbl_estado_teclado.setText(
-                "Rango inválido: debe estar entre 20 y 60 °C "
+                "Rango inválido: debe estar entre 20 y 50 °C "
                 "y separado al menos 2 °C"
+            )
+            return
+        if partes[:2] == ["ACK", "PID_TUNE"]:
+            self.lbl_estado.setText("Estado: Parámetros PID aplicados")
+            return
+        if len(partes) >= 3 and partes[:2] == ["ERR", "PID_TUNE"]:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo aplicar el PID ({partes[2]})"
+            )
+            return
+        if len(partes) == 3 and partes[:2] == ["ACK", "TEMP_TARGET"]:
+            try:
+                setpoint = float(partes[2])
+            except ValueError:
+                return
+            if math.isfinite(setpoint):
+                self.control_pid_activo = True
+                self.lbl_estado.setText(
+                    f"Estado: Control PID activo a {setpoint:.1f} °C"
+                )
+                self.actualizar_boton_prueba()
+                self.actualizar_boton_prueba_dimmer()
+            return
+        if len(partes) >= 3 and partes[:2] == ["ERR", "TEMP_TARGET"]:
+            if partes[2] == "SENSOR":
+                self.lbl_estado.setText(
+                    "Estado: Esperando una lectura válida del DHT11"
+                )
+                return
+            if partes[2] == "BUSY":
+                self.lbl_estado.setText(
+                    "Estado: Detén el ciclo o la prueba activa antes de iniciar el PID"
+                )
+                return
+            self.lbl_estado.setText(
+                f"Estado: No se pudo iniciar el PID ({partes[2]})"
             )
             return
         if len(partes) >= 3 and partes[0] == "WARN" and partes[1] == "DEWPOINT":
@@ -941,10 +1115,42 @@ class SimulacionCuarto(QMainWindow):
                 self.boton_iniciar_purga.setEnabled(True)
             return
 
-        if len(partes) >= 3 and partes[0] == "ACK" and partes[1] == "CYCLE":
-            self.ciclo_activo = True
+        if len(partes) == 3 and partes[:2] == ["ACK", "DIMMER_TEST"]:
+            self.prueba_dimmer_activa = partes[2] == "STARTED"
+            self.boton_prueba_dimmer.setText(
+                "Probando servo dimmer…" if self.prueba_dimmer_activa
+                else "Probar servo dimmer (GPIO 21)"
+            )
             self.actualizar_boton_prueba()
             self.actualizar_botones_ciclo()
+            self.actualizar_boton_prueba_dimmer()
+            self.lbl_estado.setText(
+                "Prueba: dimmer a 50%; regresando a 0° al terminar"
+                if self.prueba_dimmer_activa else
+                "Prueba del dimmer terminada; servo en 0°"
+            )
+            return
+        if len(partes) >= 3 and partes[:2] == ["ERR", "DIMMER_TEST"]:
+            self.prueba_dimmer_activa = False
+            self.boton_prueba_dimmer.setText("Probar servo dimmer (GPIO 21)")
+            self.actualizar_boton_prueba_dimmer()
+            motivos = {
+                "SENSOR": "No se puede probar sin lectura válida del DHT11",
+                "BUSY": "Detén el ciclo/prueba y apaga la Peltier antes",
+            }
+            self.lbl_estado.setText(
+                motivos.get(
+                    partes[2], f"No se pudo probar el dimmer ({partes[2]})"
+                )
+            )
+            return
+
+        if len(partes) >= 3 and partes[0] == "ACK" and partes[1] == "CYCLE":
+            self.ciclo_activo = True
+            self.control_pid_activo = False
+            self.actualizar_boton_prueba()
+            self.actualizar_botones_ciclo()
+            self.actualizar_boton_prueba_dimmer()
             self.lbl_estado.setText("Estado: Ciclo térmico iniciado")
             return
         if len(partes) >= 3 and partes[0] == "ERR" and partes[1] == "CYCLE":
@@ -968,20 +1174,42 @@ class SimulacionCuarto(QMainWindow):
             return
         if len(partes) >= 2 and partes[0] == "ACK" and partes[1] == "STOP":
             self.ciclo_activo = False
+            self.control_pid_activo = False
+            self.prueba_dimmer_activa = False
+            self.boton_prueba_dimmer.setText("Probar servo dimmer (GPIO 21)")
             self.edicion_teclado_activa = False
             self.lbl_estado_teclado.setText("Teclado: control detenido")
             self.actualizar_boton_prueba()
             self.actualizar_botones_ciclo()
+            self.actualizar_boton_prueba_dimmer()
             self.lbl_estado.setText("Estado: Ciclo detenido; salidas apagadas")
             return
 
         if len(partes) >= 2 and partes[0] == "STATUS" and partes[1] == "ERROR":
+            sensor_venia_valido = self.sensor_valido
             self.cancelar_cuenta_regresiva_purga()
             self.sensor_valido = False
-            self.purga_soportada = len(partes) in (10, 11)
-            self.ciclo_soportado = len(partes) == 11
-            self.ciclo_activo = len(partes) == 11 and partes[10] == "1"
-            if len(partes) in (10, 11):
+            self.prueba_dimmer_activa = False
+            self.control_pid_activo = False
+            self.boton_prueba_dimmer.setText("Probar servo dimmer (GPIO 21)")
+            self.temperatura_actual = None
+            self.potencia_foco = None
+            self.angulo_servo_dimmer = None
+            self.dimmer_soportado = len(partes) == 13
+            self.lbl_temp_actual.setText("--.- °C")
+            self.lbl_humedad.setText("Humedad: --%")
+            self.lbl_dimmer.setText("Foco: 0% · dimmer en retorno al mínimo")
+            if sensor_venia_valido:
+                self.buffer_temp.append(float("nan"))
+                self.tiempo_actual += 1
+                self.buffer_time.append(self.tiempo_actual)
+                self.actualizar_grafica()
+            self.purga_soportada = len(partes) in (10, 11, 13)
+            self.ciclo_soportado = len(partes) in (11, 13)
+            self.ciclo_activo = (
+                len(partes) in (11, 13) and partes[10] == "1"
+            )
+            if len(partes) in (10, 11, 13):
                 try:
                     temp_minima = float(partes[8])
                     temp_maxima = float(partes[9])
@@ -996,6 +1224,7 @@ class SimulacionCuarto(QMainWindow):
             self.prueba_conexion_activa = (
                 len(partes) >= 7 and partes[6] == "TESTING"
             )
+            self.actualizar_estado_dimmer(partes)
             self.ventiladores_activos = (
                 len(partes) >= 5 and partes[4] == "1"
             )
@@ -1007,32 +1236,36 @@ class SimulacionCuarto(QMainWindow):
             )
             self.boton_purga.setEnabled(False)
             self.lbl_estado.setText(
-                "Estado: Prueba activa; error del sensor"
+                "Estado: Prueba activa; lectura DHT11 inválida"
                 if self.prueba_conexion_activa else
-                "Estado: Error del sensor; salidas apagadas"
+                "Estado: Error de lectura DHT11; salidas apagadas"
             )
             self.actualizar_boton_prueba()
             self.actualizar_botones_ciclo()
+            self.actualizar_boton_prueba_dimmer()
             return
 
         if not partes or partes[0] != "STATUS" or len(partes) not in (
-            4, 9, 10, 11
+            4, 9, 10, 11, 13
         ):
             return
 
         try:
             temp = float(partes[1])
+            if not math.isfinite(temp) or not 0.0 <= temp <= 50.0:
+                self.procesar_linea("STATUS,ERROR")
+                return
             foco_on = partes[2] == "1"
             peltier_on = partes[3] == "1"
-            if len(partes) in (9, 10, 11):
+            if len(partes) in (9, 10, 11, 13):
                 self.ventiladores_activos = partes[4] == "1"
                 self.puertas_abiertas = partes[5] == "1"
                 fase = partes[6]
                 humedad = float(partes[7])
-                if not math.isfinite(humedad):
+                if not math.isfinite(humedad) or not 0.0 <= humedad <= 100.0:
                     humedad = None
                 self.prueba_conexion_activa = fase == "TESTING"
-                if len(partes) in (10, 11):
+                if len(partes) in (10, 11, 13):
                     temp_minima = float(partes[8])
                     temp_maxima = float(partes[9])
                     if not math.isfinite(temp_minima) or not math.isfinite(
@@ -1053,9 +1286,20 @@ class SimulacionCuarto(QMainWindow):
         except ValueError:
             return
         self.sensor_valido = True
-        self.purga_soportada = len(partes) in (10, 11)
-        self.ciclo_soportado = len(partes) == 11
-        self.ciclo_activo = len(partes) == 11 and partes[10] == "1"
+        self.purga_soportada = len(partes) in (10, 11, 13)
+        self.ciclo_soportado = len(partes) in (11, 13)
+        self.ciclo_activo = (
+            len(partes) in (11, 13) and partes[10] == "1"
+        )
+        self.prueba_dimmer_activa = fase == "DIMMER_TEST"
+        self.control_pid_activo = (
+            not self.ciclo_activo
+            and fase in ("HEATING", "COOLING", "HOLD")
+        )
+        self.boton_prueba_dimmer.setText(
+            "Probando servo dimmer…" if self.prueba_dimmer_activa
+            else "Probar servo dimmer (GPIO 21)"
+        )
         if temp_minima is None or temp_maxima is None:
             self.lbl_rango_actual.setText(
                 "Rango: no disponible (firmware anterior)"
@@ -1064,13 +1308,14 @@ class SimulacionCuarto(QMainWindow):
             self.actualizar_rango_interfaz(temp_minima, temp_maxima)
 
         self.lbl_temp_actual.setText(
-            f"{temp:.1f} °C"
+            f"{temp:.0f} °C"
         )
         self.temperatura_actual = temp
         self.lbl_humedad.setText(
             "Humedad: --%" if humedad is None
             else f"Humedad: {humedad:.0f}%"
         )
+        self.actualizar_estado_dimmer(partes)
         estados = {
             "HEATING": ("CALENTANDO", "Calentando"),
             "COOLING": ("ENFRIANDO", "Enfriando"),
@@ -1084,6 +1329,7 @@ class SimulacionCuarto(QMainWindow):
             "PURGE_RUNNING": ("PURGA", "Extrayendo aire"),
             "PURGE_CLOSING": ("PURGA", "Cerrando tapas"),
             "TESTING": ("PRUEBA", "Prueba: compuertas abiertas y ventiladores activos"),
+            "DIMMER_TEST": ("PRUEBA_DIMER", "Prueba del dimmer: servo a 50°"),
             "SENSOR_ERROR": ("ERROR", "Error del sensor"),
         }
         self.modo_termico, texto_estado = estados.get(
@@ -1099,12 +1345,14 @@ class SimulacionCuarto(QMainWindow):
         self.lbl_estado.setText(f"Estado: {texto_estado}")
         self.actualizar_boton_prueba()
         self.actualizar_botones_ciclo()
+        self.actualizar_boton_prueba_dimmer()
         self.boton_purga.setEnabled(
             self.arduino is not None
             and self.arduino.is_open
             and self.sensor_valido
             and self.purga_soportada
             and not self.prueba_conexion_activa
+            and not self.prueba_dimmer_activa
             and not fase.startswith("PURGE_")
         )
         self.foco.setBrush(
@@ -1130,7 +1378,7 @@ class SimulacionCuarto(QMainWindow):
     def actualizar_temperatura_minima(self, valor):
         if valor + 2.0 > self.spin_temp_maxima.value():
             anterior = self.spin_temp_maxima.blockSignals(True)
-            self.spin_temp_maxima.setValue(min(valor + 2.0, 60.0))
+            self.spin_temp_maxima.setValue(min(valor + 2.0, 50.0))
             self.spin_temp_maxima.blockSignals(anterior)
         self.enviar_rango_temperatura()
 
@@ -1149,9 +1397,19 @@ class SimulacionCuarto(QMainWindow):
             and self.ciclo_soportado
             and not self.ciclo_activo
             and not self.prueba_conexion_activa
+            and not self.prueba_dimmer_activa
+            and not self.control_pid_activo
             and self.modo_termico != "PURGA"
         )
         self.boton_detener_ciclo.setEnabled(conectado and self.ciclo_soportado)
+        self.boton_mantener_temp.setEnabled(
+            conectado
+            and self.sensor_valido
+            and not self.prueba_conexion_activa
+            and not self.prueba_dimmer_activa
+            and not self.ciclo_activo
+            and self.modo_termico not in ("PURGA", "ERROR")
+        )
         self.spin_temp_minima.setEnabled(not self.ciclo_activo)
         self.spin_temp_maxima.setEnabled(not self.ciclo_activo)
 
@@ -1314,19 +1572,288 @@ class SimulacionCuarto(QMainWindow):
             return False
         return True
 
-    def enviar_tecla_virtual(self, tecla, checked=False):
+    def actualizar_estado_modo_teclado(self):
+        if not hasattr(self, "lbl_estado_teclado"):
+            return
+        if self.modo_teclado_matriz == "A":
+            self.lbl_estado_teclado.setText(
+                "Matriz: Modo A (mover) · 2/4/6/8 navegar · "
+                "1/3 ±0.5 · # seleccionar · B números"
+            )
+        else:
+            self.lbl_estado_teclado.setText(
+                "Matriz: Modo B (numérico) · dígitos y * decimal · "
+                "# aceptar · A volver a mover"
+            )
+
+    def _widget_interactivo_enfocado(self):
+        widget = QApplication.focusWidget()
+        while widget is not None and widget is not self:
+            if isinstance(
+                widget, (QDoubleSpinBox, QComboBox, QAbstractButton)
+            ):
+                if widget not in self.teclas_virtuales.values():
+                    return widget
+            widget = widget.parentWidget()
+        return None
+
+    def _combo_desplegado(self):
+        for combo in self.findChildren(QComboBox):
+            if combo.view().isVisible():
+                return combo
+        return None
+
+    def _mover_seleccion_combo(self, combo, tecla):
+        fila_actual = combo.view().currentIndex().row()
+        cantidad = combo.model().rowCount(combo.rootModelIndex())
+        if cantidad <= 0:
+            return
+        if fila_actual < 0:
+            fila_actual = combo.currentIndex()
+        direccion = -1 if tecla in ("2", "4") else 1
+        fila_nueva = max(0, min(cantidad - 1, fila_actual + direccion))
+        indice = combo.model().index(
+            fila_nueva, combo.modelColumn(), combo.rootModelIndex()
+        )
+        combo.view().setCurrentIndex(indice)
+
+    def _controles_navegables(self, ventana):
+        controles = []
+        botones_virtuales = set(self.teclas_virtuales.values())
+        for widget in self.findChildren(QWidget):
+            if not isinstance(
+                widget, (QDoubleSpinBox, QComboBox, QAbstractButton)
+            ):
+                continue
+            if (
+                widget in botones_virtuales
+                or not widget.isVisible()
+                or not widget.isEnabled()
+                or widget.focusPolicy() == Qt.NoFocus
+                or widget.window() != ventana
+            ):
+                continue
+            controles.append(widget)
+        return controles
+
+    def _mover_foco_matriz(self, tecla):
+        actual = self._widget_interactivo_enfocado()
+        ventana = (
+            actual.window() if actual is not None
+            else QApplication.activeWindow() or self
+        )
+        controles = self._controles_navegables(ventana)
+        if not controles:
+            return
+        if actual not in controles:
+            destino = min(
+                controles,
+                key=lambda widget: (
+                    widget.mapToGlobal(widget.rect().center()).y(),
+                    widget.mapToGlobal(widget.rect().center()).x(),
+                ),
+            )
+        else:
+            centro_actual = actual.mapToGlobal(actual.rect().center())
+            candidatos = []
+            vertical = tecla in ("2", "8")
+            signo = -1 if tecla in ("2", "4") else 1
+            for widget in controles:
+                if widget is actual:
+                    continue
+                centro = widget.mapToGlobal(widget.rect().center())
+                dx = centro.x() - centro_actual.x()
+                dy = centro.y() - centro_actual.y()
+                principal = dy if vertical else dx
+                secundario = abs(dx) if vertical else abs(dy)
+                if principal * signo <= 0:
+                    continue
+                distancia = abs(principal) + 1.5 * secundario
+                candidatos.append((distancia, secundario, widget))
+            if not candidatos:
+                self.lbl_estado_teclado.setText(
+                    "Matriz: no hay otro control en esa dirección"
+                )
+                return
+            dimension_transversal = (
+                actual.width() if vertical else actual.height()
+            )
+            tolerancia_alineacion = max(12, dimension_transversal * 0.55)
+            alineados = [
+                candidato for candidato in candidatos
+                if candidato[1] <= tolerancia_alineacion
+            ]
+            if alineados:
+                candidatos = alineados
+            destino = min(candidatos, key=lambda candidato: candidato[0])[2]
+
+        destino.setFocus(Qt.OtherFocusReason)
+        contenido = self.control_scroll.widget()
+        if contenido is not None and contenido.isAncestorOf(destino):
+            self.control_scroll.ensureWidgetVisible(destino, 24, 24)
+
+    def _spinbox_enfocado(self):
+        widget = self._widget_interactivo_enfocado()
+        return widget if isinstance(widget, QDoubleSpinBox) else None
+
+    def _cambiar_modo_teclado(self, modo, spinbox=None):
+        self.modo_teclado_matriz = modo
+        if modo == "B" and spinbox is not None:
+            spinbox.setFocus(Qt.OtherFocusReason)
+            spinbox.lineEdit().selectAll()
+        self.actualizar_estado_modo_teclado()
+
+    def _insertar_caracter_spinbox(self, spinbox, caracter):
+        if caracter == "*":
+            caracter = spinbox.locale().decimalPoint()
+            tecla = (
+                Qt.Key_Period if caracter == "." else Qt.Key_Comma
+            )
+        else:
+            tecla = Qt.Key_0 + int(caracter)
+
+        QApplication.sendEvent(
+            spinbox,
+            QKeyEvent(QEvent.KeyPress, tecla, Qt.NoModifier, caracter),
+        )
+        QApplication.sendEvent(
+            spinbox,
+            QKeyEvent(QEvent.KeyRelease, tecla, Qt.NoModifier, caracter),
+        )
+
+    def _aceptar_modo_numerico(self):
+        spinbox = self._spinbox_enfocado()
+        if spinbox is not None:
+            spinbox.interpretText()
+        self._cambiar_modo_teclado("A")
+
+    def _aceptar_combo_desplegado(self, combo):
+        indice = combo.view().currentIndex()
+        if indice.isValid():
+            combo.setCurrentIndex(indice.row())
+        combo.hidePopup()
+        self._cambiar_modo_teclado("A")
+
+    def procesar_tecla_interfaz(self, tecla, checked=False):
         if checked:
             return
-        if not self.arduino or not self.arduino.is_open:
-            self.lbl_estado.setText(
-                "Estado: Conecta el ESP32 para usar el teclado"
+
+        if tecla == "A":
+            if self.modo_teclado_matriz == "B":
+                spinbox = self._spinbox_enfocado()
+                if spinbox is not None:
+                    spinbox.interpretText()
+            self._cambiar_modo_teclado("A")
+            return
+        if tecla == "B":
+            self._cambiar_modo_teclado(
+                "B", self._spinbox_enfocado()
             )
             return
+
+        combo = self._combo_desplegado()
+        if tecla == "#" and combo is not None:
+            self._aceptar_combo_desplegado(combo)
+            return
+        if self.modo_teclado_matriz == "A" and tecla in (
+            "2", "4", "6", "8"
+        ):
+            if combo is not None:
+                self._mover_seleccion_combo(combo, tecla)
+            else:
+                self._mover_foco_matriz(tecla)
+            return
+        if self.modo_teclado_matriz == "A" and tecla in ("1", "3"):
+            spinbox = self._spinbox_enfocado()
+            if spinbox is None:
+                self.lbl_estado_teclado.setText(
+                    "Matriz: selecciona primero un control numérico"
+                )
+                return
+            cambio = 0.5 if tecla == "1" else -0.5
+            spinbox.setValue(spinbox.value() + cambio)
+            return
+        if tecla == "#":
+            if self.modo_teclado_matriz == "B":
+                self._aceptar_modo_numerico()
+                return
+            widget = self._widget_interactivo_enfocado()
+            if isinstance(widget, QDoubleSpinBox):
+                self._cambiar_modo_teclado("B", widget)
+            elif isinstance(widget, QComboBox):
+                widget.showPopup()
+            elif isinstance(widget, QAbstractButton):
+                widget.click()
+            else:
+                self.lbl_estado_teclado.setText(
+                    "Matriz: enfoca un control y pulsa #"
+                )
+            return
+
+        if tecla == "C" and self.modo_teclado_matriz == "A":
+            self.iniciar_ciclo_desde_matriz()
+            return
+        if tecla == "D":
+            self.enviar_comando_detener()
+            return
+
+        if self.modo_teclado_matriz == "B":
+            spinbox = self._spinbox_enfocado()
+            if spinbox is None:
+                self.lbl_estado_teclado.setText(
+                    "Matriz: enfoca una caja numérica para escribir"
+                )
+                return
+            if tecla.isdigit() or tecla == "*":
+                self._insertar_caracter_spinbox(spinbox, tecla)
+            return
+
+    def enviar_modo_teclado_interfaz(self, activar):
+        if not self.arduino or not self.arduino.is_open:
+            return False
+        comando = b"KEYPAD_UI,1\n" if activar else b"KEYPAD_UI,0\n"
         try:
-            self.arduino.write(f"KEY,{tecla}\n".encode("utf-8"))
+            self.arduino.write(comando)
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado_teclado.setText(
+                f"Matriz: no se pudo cambiar el modo del ESP32: {error}"
+            )
+            return False
+        return True
+
+    def enviar_heartbeat_teclado(self):
+        if self.arduino and self.arduino.is_open:
+            self.enviar_modo_teclado_interfaz(True)
+
+    def iniciar_ciclo_desde_matriz(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText(
+                "Estado: Conecta el ESP32 para iniciar el ciclo"
+            )
+            return
+        if not self.sensor_valido or not self.ciclo_soportado:
+            self.lbl_estado.setText(
+                "Estado: Se requiere sensor válido y firmware compatible"
+            )
+            return
+        if (
+            self.ciclo_activo
+            or self.control_pid_activo
+            or self.prueba_conexion_activa
+            or self.prueba_dimmer_activa
+            or self.modo_termico in ("PURGA", "ERROR")
+        ):
+            self.lbl_estado.setText(
+                "Estado: Detén el control o prueba activa antes del ciclo"
+            )
+            return
+        if not self.enviar_rango_temperatura():
+            return
+        try:
+            self.arduino.write(b"CYCLE,MIN\n")
         except (serial.SerialException, OSError) as error:
             self.lbl_estado.setText(
-                f"Estado: No se pudo enviar la tecla {tecla}: {error}"
+                f"Estado: No se pudo iniciar el ciclo: {error}"
             )
 
     def cancelar_cuenta_regresiva_purga(self):
@@ -1377,19 +1904,69 @@ class SimulacionCuarto(QMainWindow):
             if activar else "Estado: Prueba de conexión detenida"
         )
 
+    def solicitar_prueba_dimmer(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText("Estado: Conecta el ESP32 para probar el dimmer")
+            return
+        if not self.sensor_valido:
+            self.lbl_estado.setText(
+                "Estado: Se requiere una lectura válida del DHT11"
+            )
+            return
+        if not self.dimmer_soportado:
+            self.lbl_estado.setText(
+                "Estado: Carga el firmware con soporte de prueba del dimmer"
+            )
+            return
+
+        try:
+            self.arduino.write(b"DIMMER_TEST\n")
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo probar el dimmer: {error}"
+            )
+            return
+
+        self.prueba_dimmer_activa = True
+        self.boton_prueba_dimmer.setText("Probando servo dimmer…")
+        self.actualizar_boton_prueba_dimmer()
+        self.lbl_estado.setText(
+            "Estado: Prueba del dimmer iniciada; volverá a 0° automáticamente"
+        )
+
     def actualizar_boton_prueba(self):
         self.boton_prueba_conexion.setText(
-            "Detener prueba de conexión"
+            "Detener prueba de tapas/ventiladores"
             if self.prueba_conexion_activa else
-            "Iniciar prueba de conexión"
+            "Probar tapas y ventiladores"
         )
         conectado = self.arduino is not None and self.arduino.is_open
         self.boton_prueba_conexion.setEnabled(
             conectado
+            and not self.prueba_dimmer_activa
             and (
                 self.prueba_conexion_activa
-                or (not self.ciclo_activo and self.modo_termico != "PURGA")
+                or (
+                    not self.control_pid_activo
+                    and not self.ciclo_activo
+                    and self.modo_termico != "PURGA"
+                )
             )
+        )
+
+    def actualizar_boton_prueba_dimmer(self):
+        if not hasattr(self, "boton_prueba_dimmer"):
+            return
+        conectado = self.arduino is not None and self.arduino.is_open
+        self.boton_prueba_dimmer.setEnabled(
+            conectado
+            and self.dimmer_soportado
+            and self.sensor_valido
+            and not self.prueba_dimmer_activa
+            and not self.prueba_conexion_activa
+            and not self.control_pid_activo
+            and not self.ciclo_activo
+            and self.modo_termico not in ("PURGA", "ERROR")
         )
 
     def closeEvent(self, event):
@@ -1400,6 +1977,7 @@ class SimulacionCuarto(QMainWindow):
                 return
             if self.prueba_conexion_activa:
                 self.enviar_modo_prueba(False)
+            self.enviar_modo_teclado_interfaz(False)
             self.arduino.close()
         event.accept()
 

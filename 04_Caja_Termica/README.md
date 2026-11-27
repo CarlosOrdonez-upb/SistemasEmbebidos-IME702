@@ -2,7 +2,7 @@
 # 🌡️ Proyecto 04: Caja Térmica Inteligente con Sistema de Purga
 
 ## 📋 Objetivo
-Diseñar e implementar una cámara térmica controlada por un microcontrolador ESP32, capaz de mantener una temperatura dentro de un rango configurable de 20 a 60 °C mediante un sistema de calefacción (foco) y refrigeración (módulo Peltier). La purga se solicita manualmente desde la interfaz.
+Diseñar e implementar una cámara térmica controlada por un microcontrolador ESP32, capaz de mantener una temperatura dentro de un rango configurable de 20 a 50 °C mediante un sistema de calefacción (foco) y refrigeración (módulo Peltier). La purga se solicita manualmente desde la interfaz.
 
 ---
 
@@ -18,7 +18,7 @@ El firmware implementa un control robusto basado en tres pilares fundamentales:
    - Activa los ventiladores de extracción para renovar el aire estancado.
    - Cierra las tapas al terminar los 20 segundos de extracción y reanuda el ciclo térmico.
 3. **Protecciones de seguridad:**
-   Una lectura DHT11 inválida, menor de 10 °C o mayor de 60 °C apaga foco, Peltier y ventiladores, cierra las tapas y reporta `STATUS,ERROR`. Se reanuda automáticamente cuando vuelve una lectura válida.
+   Una lectura de temperatura DHT11 inválida o fuera de su rango de operación de 0 a 50 °C apaga foco, Peltier y ventiladores, cierra las tapas y reporta `STATUS,ERROR`. El control se reanuda automáticamente cuando vuelve una lectura válida. Si falla solo la humedad, se conserva el control por temperatura y se desactiva la lectura de punto de rocío.
    El foco tiene un máximo de 10 minutos continuos seguido de 1 minuto de descanso; la Peltier tiene un máximo de 15 minutos seguido de 2 minutos de descanso. Si se pierden comandos seriales durante 30 segundos, se conserva el rango configurado y el control térmico autónomo sigue funcionando.
    Los mensajes detallados de cambios de fase, decisiones de control y protecciones se habilitan compilando con `DEBUG_MODE` definido.
 
@@ -28,17 +28,22 @@ El firmware implementa un control robusto basado en tres pilares fundamentales:
 
 | Componente | Pin ESP32 | Función / Nota |
 | :--- | :---: | :--- |
-| **Sensor DHT11** | GPIO 27 | Lectura digital de temperatura y humedad. |
-| **Teclado matricial 4×4** | GPIO 13, 14, 26, 16 / 25, 33, 32, 4 | Filas / columnas; la fila 4 usa GPIO 16 para liberar GPIO 27 para el DHT11. |
-| **Foco 60W** | GPIO 5 | Controlado vía Relé/Mosfet para calentamiento. |
-| **Módulo Peltier** | GPIO 19 | Controlado vía Mosfet IRFZ44N para enfriamiento. |
+| **Sensor DHT11** | GPIO 15 | Lectura digital de temperatura y humedad. Alimentar a 3.3 V. |
+| **Teclado matricial 4×4** | GPIO 13, 14, 26, 27 / 25, 33, 32, 4 | Filas / columnas. |
+| **Foco 60W** | Dimmer mecánico posicionado por servo | El servo recibe su señal de control por GPIO 21; el foco no usa el relé. |
+| **Módulo Peltier** | GPIO 19 | Conmutado por el relé; GPIO 19 queda como su salida de control. |
 | **Ventiladores 12V** | GPIO 18 | Circulación de aire y apoyo en la purga. |
 | **Servo Tapa 1** | GPIO 22 | Apertura de compuerta de ventilación izquierda. |
 | **Servo Tapa 2** | GPIO 23 | Apertura de compuerta de ventilación derecha. |
+| **Servo del dimmer** | GPIO 21 | Ajusta mecánicamente el dimmer del foco; recorrido configurable en el firmware, inicialmente 0° apagado y 100° potencia máxima. |
 
-> ⚠️ **Nota de Seguridad:** El foco y el módulo Peltier nunca se activan simultáneamente en el firmware (`escribirSalidas`) para evitar cortocircuitos o daños a la fuente de alimentación.
+> ⚠️ **Nota de Seguridad:** El foco y el módulo Peltier nunca se activan simultáneamente en el firmware (`escribirSalidas`) para evitar cortocircuitos o daños a la fuente de alimentación. El relé se conserva para la Peltier; el foco depende del servo y del apagado real del dimmer en 0°.
 >
-> El firmware mantiene los límites dentro de 20–60 °C y garantiza al menos 2 °C de diferencia.
+> El firmware mantiene los límites de control dentro de 20–50 °C (máximo recomendado del DHT11) y garantiza al menos 2 °C de diferencia.
+>
+> En un DHT11 sin módulo, conecta una resistencia pull-up de 4.7–10 kΩ entre DATA y 3.3 V. Comparte GND entre sensor y ESP32; no alimentes DATA con 5 V. GPIO 15 también es un pin de configuración de arranque del ESP32: confirma que la placa arranque normalmente con el sensor conectado. El DHT11 tiene resolución de 1 °C y actualiza cada 2 segundos, por lo que la telemetría de 250 ms puede repetir el último valor.
+>
+> El servo del dimmer mueve mecánicamente el mando de un dimmer aislado. Recibe su posición objetivo desde el PID y avanza hasta 5° cada 20 ms. Los valores `ANGULO_DIMER_MINIMO` y `ANGULO_DIMER_MAXIMO`, visibles al inicio del sketch, son ajustables; se configuran inicialmente en 0° (apagado) y 100° (potencia máxima). Aumenta el máximo gradualmente y sin forzar el tope mecánico. Cuando el control se detiene o hay error de sensor, el servo vuelve a 0°. Alimenta los servos con una fuente adecuada para ellos y comparte GND con el ESP32. El ángulo reportado es el comandado, no una medición de posición real.
 
 ---
 
@@ -53,7 +58,10 @@ Se desarrolló una aplicación de escritorio en Python utilizando **PyQt5** que 
 - **Ciclo térmico:** Permite elegir el primer límite, muestra avisos si la temperatura está fuera del rango y ofrece **Detener todo**.
 - **Purga:** Se activa automáticamente al alcanzar la máxima, antes de iniciar el enfriamiento, y puede solicitarse manualmente; al concluir, el ciclo continúa.
 - **Aviso de condensación:** Calculado con las lecturas de temperatura y humedad del DHT11.
-- **Control PID:** Control en lazo cerrado con banda muerta de ±2 °C y sintonización dinámica de Kp, Ki y Kd desde la interfaz.
+- **Navegación por teclado matricial:** Con la interfaz conectada, inicia en modo A; 2/4/6/8 mueven el foco, 1/3 ajustan el valor enfocado en ±0.5 y # selecciona o abre un menú. En controles numéricos, # entra al modo B; dígitos y * escriben el valor, y # confirma y vuelve a A. B activa entrada numérica y A regresa a navegación. C inicia el ciclo hacia la mínima y D detiene todo. Mouse y teclado de la computadora siguen disponibles; sin interfaz conectada se conserva el control local del ESP32.
+- **Prueba de tapas y ventiladores:** Mueve los servos de tapas en GPIO 22/23 y solicita HIGH en GPIO 18; no mueve el servo dimmer de GPIO 21.
+- **Control PID:** Control en lazo cerrado con banda muerta de ±1 °C y sintonización dinámica de Kp, Ki y Kd desde la interfaz. La salida PID regula el foco con el servo del dimmer; la Peltier conserva el control por ventanas de 60 segundos.
+- **Prueba del dimmer:** El botón independiente mueve el servo a 50° (50% del recorrido configurado) durante un segundo y luego vuelve a 0°. Solo está disponible con lectura válida del DHT11 y cuando el ciclo/control térmico está detenido; no sustituye una comprobación física segura del foco y el dimmer.
 - **Gráfica en tiempo real:** Visualización de la respuesta térmica y del Setpoint mediante gráficas animadas con pyqtgraph.
 - **Comunicación Serial:** Selecciona el puerto COM del ESP32 y pulsa **Conectar** (115200 baudios); la aplicación no inicia el control térmico automáticamente. Recibe `ACK,SETRANGE` al editar el rango y `STATUS` cada 250 ms. El firmware debe ser compatible con el protocolo de ciclo para habilitar los botones de inicio y detención.
 
@@ -70,15 +78,20 @@ La interfaz y el ESP32 se comunican mediante texto plano estructurado:
 
 | Dirección | Comando / Formato | Descripción |
 | :--- | :--- | :--- |
-| **PC → ESP32** | `SETRANGE,28.0,35.0` | Establece los límites de temperatura (ambos entre 20.0 y 60.0 °C y separados por al menos 2.0 °C). |
+| **PC → ESP32** | `SETRANGE,28.0,35.0` | Establece los límites de temperatura (ambos entre 20.0 y 50.0 °C y separados por al menos 2.0 °C). |
 | **PC → ESP32** | `CYCLE,MIN` / `CYCLE,MAX` | Inicia el ciclo con el límite indicado como primera meta. |
 | **PC → ESP32** | `STOP` | Detiene el ciclo y apaga foco, Peltier, ventiladores y compuertas. |
 | **PC → ESP32** | `PURGE` | Solicita manualmente una purga; pausa el control térmico y lo reanuda al terminar. |
-| **PC → ESP32** | `TEMP_TARGET:XX` | Activa el control de temperatura PID con el objetivo indicado entre 20 y 60 °C. |
+| **PC → ESP32** | `TEMP_TARGET:XX` | Activa el control PID con el objetivo indicado entre 20 y 50 °C. |
 | **PC → ESP32** | `PID_TUNE,Kp,Ki,Kd` | Actualiza los parámetros PID; cada parámetro debe estar entre 0 y 10. |
-| **ESP32 → PC** | `TEMP_CURRENT:XX.X` | Temperatura actual enviada cada segundo para la gráfica en tiempo real. |
-| **ESP32 → PC** | `STATUS,temp,foco,peltier,fans,tapas,FASE,humedad,tempMin,tempMax,cicloActivo` | Telemetría y estado del ciclo; las fases `CYCLE_*` indican dirección y límite objetivo. |
-| **ESP32 → PC** | `STATUS,ERROR,0,0,0,0,SENSOR_ERROR,0.0,28.0,35.0,cicloActivo` | Alerta crítica por fallo de sensor, incluyendo el rango y estado del ciclo. |
+| **PC → ESP32** | `KEYPAD_UI,1` / `KEYPAD_UI,0` | Activa el envío de teclas matriciales a la interfaz; se mantiene con una señal cada segundo y vuelve al control local si se pierde durante 5 segundos. |
+| **ESP32 → PC** | `KEYPAD_KEY,<tecla>` | Entrega una tecla física al navegador de la interfaz cuando está activo el modo UI. |
+| **PC → ESP32** | `DIMMER_TEST` | Prueba el dimmer a 50% por un segundo y retorna el servo a 0°; requiere sensor válido y control detenido. |
+| **ESP32 → PC** | `ACK,DIMMER_TEST,STARTED` / `ACK,DIMMER_TEST,DONE` | Indica el inicio y la finalización de la prueba automática. |
+| **ESP32 → PC** | `ERR,DIMMER_TEST,SENSOR` / `ERR,DIMMER_TEST,BUSY` | Rechaza la prueba si el DHT11 no es válido o el sistema no está detenido. |
+| **ESP32 → PC** | `TEMP_CURRENT:XX` | Lectura de temperatura DHT11 enviada cada 2 segundos para la gráfica en tiempo real. |
+| **ESP32 → PC** | `STATUS,temp,foco,peltier,fans,tapas,FASE,humedad,tempMin,tempMax,cicloActivo,potenciaFoco,anguloServo` | Telemetría del ciclo, potencia solicitada del foco (0–100 %) y ángulo comandado (configurado inicialmente entre 0° y 100°). |
+| **ESP32 → PC** | `STATUS,ERROR,0,0,0,0,SENSOR_ERROR,0.0,28.0,35.0,cicloActivo,0,anguloServo` | Alerta crítica por fallo de sensor; la potencia se lleva a 0 y el servo recibe la orden de 0°. |
 | **ESP32 → PC** | `ACK,SETRANGE,tempMin,tempMax` | Actualización inmediata de los límites de temperatura. |
 | **ESP32 → PC** | `WARN,DEWPOINT,RISK,puntoRocio,tempMin` / `WARN,DEWPOINT,CLEAR` | Avisos calculados con las lecturas del DHT11. |
 

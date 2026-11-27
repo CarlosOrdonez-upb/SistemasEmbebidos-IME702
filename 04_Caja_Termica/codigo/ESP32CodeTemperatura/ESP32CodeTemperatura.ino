@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define DHTPIN 27
+#define DHTPIN 15
 #define DHTTYPE DHT11
 
 #ifdef DEBUG_MODE
@@ -16,31 +16,41 @@
 
 
 
-const uint8_t PIN_FOCO = 5;
 const uint8_t PIN_PELTIER = 19;
 const uint8_t PIN_FANS = 18;
 const uint8_t PIN_SERVO_TAPA_1 = 22;
 const uint8_t PIN_SERVO_TAPA_2 = 23;
-const uint8_t PIN_TECLADO_FILAS[4] = {13, 14, 26, 16};
+const uint8_t PIN_SERVO_DIMER = 21;
+const uint8_t PIN_TECLADO_FILAS[4] = {13, 14, 26, 27};
 const uint8_t PIN_TECLADO_COLUMNAS[4] = {25, 33, 32, 4};
 
 const uint8_t SERVO_CERRADO = 0;
 const uint8_t SERVO_ABIERTO = 160;
+// CALIBRACION DEL DIMMER: ajustar al recorrido mecanico del mando.
+const int ANGULO_DIMER_MINIMO = 0;  // Posicion de dimmer apagado.
+const int ANGULO_DIMER_MAXIMO = 100;  // Aumentar gradualmente si hace falta.
+// No superar 180 grados ni forzar el tope mecanico del dimmer.
+const int PASO_SERVO_DIMER_GRADOS = 5;
+const float POTENCIA_DIMER_PRUEBA = 50.0f;
 const float TEMPERATURA_CONFIG_MINIMA = 20.0f;
-const float TEMPERATURA_CONFIG_MAXIMA = 60.0f;
-const float TEMPERATURA_SENSOR_MINIMA = 10.0f;
-const float TEMPERATURA_SENSOR_MAXIMA = 60.0f;
+const float TEMPERATURA_CONFIG_MAXIMA = 50.0f;
+const float TEMPERATURA_SENSOR_MINIMA = 0.0f;
+const float TEMPERATURA_SENSOR_MAXIMA = 50.0f;
 const float DIFERENCIA_PURGA_AUTOMATICA = 2.5f;
 
-const unsigned long INTERVALO_SENSOR_MS = 1000;
+const unsigned long INTERVALO_SENSOR_MS = 2000;
 const unsigned long INTERVALO_ESTADO_MS = 250;
-const unsigned long INTERVALO_TEMPERATURA_SERIAL_MS = 1000;
+const unsigned long INTERVALO_TEMPERATURA_SERIAL_MS = 2000;
+const unsigned long VENTANA_PID_MS = 60000;
 const unsigned long INTERVALO_TECLADO_MS = 5;
+const unsigned long INTERVALO_PASO_SERVO_DIMER_MS = 20;
+const unsigned long DURACION_PRUEBA_DIMER_MS = 1000;
 const unsigned long ANTIRREBOTE_TECLADO_MS = 35;
 const unsigned long ESPERA_APERTURA_MS = 1250;
 const unsigned long TIEMPO_VENTILACION_MS = 20000;
 const unsigned long TIEMPO_SERVO_MS = 400;
 const unsigned long TIMEOUT_COMUNICACION_MS = 30000;
+const unsigned long TIMEOUT_TECLADO_UI_MS = 5000;
 const unsigned long TIEMPO_MAXIMO_FOCO_MS = 10UL * 60UL * 1000UL;
 const unsigned long DESCANSO_FOCO_MS = 1UL * 60UL * 1000UL;
 const unsigned long TIEMPO_MAXIMO_PELTIER_MS = 15UL * 60UL * 1000UL;
@@ -66,12 +76,35 @@ enum CampoRango {
   EDITANDO_MAXIMO
 };
 
+enum ModoPID {
+  PID_INACTIVO,
+  PID_CALENTAR,
+  PID_ENFRIAR
+};
+
+enum EstadoPruebaDimer {
+  PRUEBA_DIMER_INACTIVA,
+  PRUEBA_DIMER_SUBIENDO,
+  PRUEBA_DIMER_MANTENIENDO,
+  PRUEBA_DIMER_REGRESANDO
+};
+
 Servo servoTapa1;
 Servo servoTapa2;
+Servo servoDimer;
 DHT dht(DHTPIN, DHTTYPE);
-double Setpoint = 28.0, Input = 0.0, Output = 0.0;
-double Kp = 2.0, Ki = 0.5, Kd = 1.0;
-PID myPID(&Input, &Output, &Setpoint, Kp, Ki, Kd, DIRECT);
+double Setpoint = 28.0;
+double Input = 0.0;
+double salidaPIDCalentar = 0.0;
+double salidaPIDEnfriar = 0.0;
+double Kp = 2.0;
+double Ki = 0.5;
+double Kd = 1.0;
+float potenciaFocoAplicada = 0.0f;
+int anguloServoDimerActual = ANGULO_DIMER_MINIMO;
+int anguloServoDimerObjetivo = ANGULO_DIMER_MINIMO;
+PID pidCalentar(&Input, &salidaPIDCalentar, &Setpoint, Kp, Ki, Kd, DIRECT);
+PID pidEnfriar(&Input, &salidaPIDEnfriar, &Setpoint, Kp, Ki, Kd, REVERSE);
 
 Fase fase = NORMAL;
 ModoTermico modoTermico = MODO_MANTENER;
@@ -83,13 +116,16 @@ float humedadActual = NAN;
 CampoRango campoRangoEnEdicion = SIN_EDICION;
 char bufferEntradaRango[6];
 size_t longitudEntradaRango = 0;
+ModoPID modoPid = PID_INACTIVO;
 bool sensorValido = false;
 bool primeraLectura = true;
 bool modoPrueba = false;
 bool cicloActivo = false;
 bool controlDetenido = true;
 bool controlPidActivo = false;
+bool tecladoUiActivo = false;
 bool objetivoCicloMaximo = true;
+EstadoPruebaDimer estadoPruebaDimer = PRUEBA_DIMER_INACTIVA;
 bool purgaAutomaticaEnBajada = false;
 bool riesgoPuntoRocio = false;
 bool timeoutComunicacionReportado = false;
@@ -101,8 +137,12 @@ unsigned long ultimoSensorMs = 0;
 unsigned long ultimoEstadoMs = 0;
 unsigned long ultimoEnvioTemperaturaMs = 0;
 unsigned long ultimoEscaneoTecladoMs = 0;
+unsigned long ultimoPasoServoDimerMs = 0;
+unsigned long inicioRetencionPruebaDimerMs = 0;
+unsigned long inicioVentanaPidMs = 0;
 unsigned long inicioFaseMs = 0;
 unsigned long ultimoComandoMs = 0;
+unsigned long ultimoHeartbeatTecladoUiMs = 0;
 unsigned long inicioFocoMs = 0;
 unsigned long inicioPeltierMs = 0;
 unsigned long inicioDescansoFocoMs = 0;
@@ -186,7 +226,7 @@ void limitarTiempoSalidas(bool &foco, bool &peltier, unsigned long ahora) {
     peltier = false;
   }
 
-  bool focoActivo = digitalRead(PIN_FOCO) == HIGH;
+  bool focoActivo = potenciaFocoAplicada > 0.0f;
   if (focoActivo && ahora - inicioFocoMs >= TIEMPO_MAXIMO_FOCO_MS) {
     focoEnDescanso = true;
     inicioDescansoFocoMs = ahora;
@@ -231,12 +271,40 @@ void limitarTiempoSalidas(bool &foco, bool &peltier, unsigned long ahora) {
   peltier = peltier && !peltierEnDescanso;
 }
 
-void escribirSalidas(bool foco, bool peltier, bool ventiladores) {
+int anguloDimerParaPotencia(float potencia) {
+  if (potencia <= 0.0f) {
+    return ANGULO_DIMER_MINIMO;
+  }
+
+  int recorrido = static_cast<int>(ceilf(
+      (ANGULO_DIMER_MAXIMO - ANGULO_DIMER_MINIMO) * potencia / 100.0f
+  ));
+  if (recorrido < 1) {
+    recorrido = 1;
+  }
+  return ANGULO_DIMER_MINIMO + recorrido;
+}
+
+void escribirSalidasConPotencia(
+    float potenciaFoco, bool peltier, bool ventiladores
+) {
+  if (!isfinite(potenciaFoco)) {
+    potenciaFoco = 0.0f;
+  }
+  potenciaFoco = fminf(100.0f, fmaxf(0.0f, potenciaFoco));
+  bool foco = potenciaFoco > 0.0f;
   unsigned long ahora = millis();
   limitarTiempoSalidas(foco, peltier, ahora);
-  bool focoEstabaActivo = digitalRead(PIN_FOCO) == HIGH;
+  bool focoEstabaActivo = potenciaFocoAplicada > 0.0f;
   bool peltierEstabaActiva = digitalRead(PIN_PELTIER) == HIGH;
-  digitalWrite(PIN_FOCO, foco ? HIGH : LOW);
+  if (!foco) {
+    potenciaFoco = 0.0f;
+  }
+  anguloServoDimerObjetivo = anguloDimerParaPotencia(potenciaFoco);
+  if (peltier && anguloServoDimerActual != ANGULO_DIMER_MINIMO) {
+    peltier = false;
+  }
+  potenciaFocoAplicada = potenciaFoco;
   digitalWrite(PIN_PELTIER, peltier ? HIGH : LOW);
   digitalWrite(PIN_FANS, ventiladores ? HIGH : LOW);
   if (focoEstabaActivo != foco) {
@@ -244,6 +312,69 @@ void escribirSalidas(bool foco, bool peltier, bool ventiladores) {
   }
   if (peltierEstabaActiva != peltier) {
     DEBUG_PRINT("DEBUG,SALIDA,PELTIER,%s\n", peltier ? "ON" : "OFF");
+  }
+}
+
+void escribirSalidas(bool foco, bool peltier, bool ventiladores) {
+  escribirSalidasConPotencia(foco ? 100.0f : 0.0f, peltier, ventiladores);
+}
+
+void actualizarServoDimer(unsigned long ahora) {
+  if (ahora - ultimoPasoServoDimerMs < INTERVALO_PASO_SERVO_DIMER_MS) {
+    return;
+  }
+  ultimoPasoServoDimerMs = ahora;
+
+  if (anguloServoDimerActual == anguloServoDimerObjetivo) {
+    return;
+  }
+
+  int diferencia = anguloServoDimerObjetivo - anguloServoDimerActual;
+  int paso = min(abs(diferencia), PASO_SERVO_DIMER_GRADOS);
+  anguloServoDimerActual += diferencia > 0 ? paso : -paso;
+  servoDimer.write(anguloServoDimerActual);
+}
+
+void actualizarPruebaDimer(unsigned long ahora) {
+  if (!sensorValido) {
+    estadoPruebaDimer = PRUEBA_DIMER_INACTIVA;
+    controlDetenido = true;
+    escribirSalidasConPotencia(0.0f, false, false);
+    Serial.println("ERR,DIMMER_TEST,SENSOR");
+    return;
+  }
+
+  switch (estadoPruebaDimer) {
+    case PRUEBA_DIMER_SUBIENDO:
+      escribirSalidasConPotencia(
+          POTENCIA_DIMER_PRUEBA, false, false
+      );
+      if (anguloServoDimerActual >=
+          anguloDimerParaPotencia(POTENCIA_DIMER_PRUEBA)) {
+        estadoPruebaDimer = PRUEBA_DIMER_MANTENIENDO;
+        inicioRetencionPruebaDimerMs = ahora;
+      }
+      break;
+    case PRUEBA_DIMER_MANTENIENDO:
+      escribirSalidasConPotencia(
+          POTENCIA_DIMER_PRUEBA, false, false
+      );
+      if (ahora - inicioRetencionPruebaDimerMs >=
+          DURACION_PRUEBA_DIMER_MS) {
+        estadoPruebaDimer = PRUEBA_DIMER_REGRESANDO;
+      }
+      break;
+    case PRUEBA_DIMER_REGRESANDO:
+      escribirSalidasConPotencia(0.0f, false, false);
+      if (anguloServoDimerActual == ANGULO_DIMER_MINIMO) {
+        estadoPruebaDimer = PRUEBA_DIMER_INACTIVA;
+        controlDetenido = true;
+        cambiarModoTermico(MODO_MANTENER);
+        Serial.println("ACK,DIMMER_TEST,DONE");
+      }
+      break;
+    case PRUEBA_DIMER_INACTIVA:
+      break;
   }
 }
 
@@ -281,6 +412,7 @@ void detenerControl() {
   controlPidActivo = false;
   controlDetenido = true;
   modoPrueba = false;
+  estadoPruebaDimer = PRUEBA_DIMER_INACTIVA;
   purgaAutomaticaEnBajada = false;
   cambiarModoTermico(MODO_MANTENER);
   cambiarFase(sensorValido ? NORMAL : ERROR_SENSOR);
@@ -311,7 +443,7 @@ void cancelarEdicionRango() {
 }
 
 void iniciarEdicionRango(CampoRango campo) {
-  if (cicloActivo || modoPrueba || fase != NORMAL) {
+  if (cicloActivo || controlPidActivo || modoPrueba || fase != NORMAL) {
     Serial.println("ERR,KEYPAD,BUSY");
     return;
   }
@@ -435,6 +567,12 @@ char leerTeclaMatriz() {
 void procesarComando(char *comando, unsigned long ahora);
 
 void procesarTecla(char tecla, unsigned long ahora) {
+  if (tecladoUiActivo) {
+    Serial.print("KEYPAD_KEY,");
+    Serial.println(tecla);
+    return;
+  }
+
   char comando[16];
   switch (tecla) {
     case 'A':
@@ -495,9 +633,38 @@ void escanearTeclado(unsigned long ahora) {
   }
 }
 
+void restablecerSalidasPid() {
+  pidCalentar.SetMode(MANUAL);
+  salidaPIDCalentar = 0.0;
+  pidCalentar.SetMode(AUTOMATIC);
+  pidEnfriar.SetMode(MANUAL);
+  salidaPIDEnfriar = 0.0;
+  pidEnfriar.SetMode(AUTOMATIC);
+  modoPid = PID_INACTIVO;
+  inicioVentanaPidMs = millis();
+}
+
 void procesarComando(char *comando, unsigned long ahora) {
   ultimoComandoMs = ahora;
   timeoutComunicacionReportado = false;
+  if (strcmp(comando, "KEYPAD_UI,1") == 0) {
+    bool yaActivo = tecladoUiActivo;
+    tecladoUiActivo = true;
+    ultimoHeartbeatTecladoUiMs = ahora;
+    cancelarEdicionRango();
+    if (!yaActivo) {
+      Serial.println("ACK,KEYPAD_UI,ON");
+    }
+    return;
+  }
+  if (strcmp(comando, "KEYPAD_UI,0") == 0) {
+    bool yaActivo = tecladoUiActivo;
+    tecladoUiActivo = false;
+    if (yaActivo) {
+      Serial.println("ACK,KEYPAD_UI,OFF");
+    }
+    return;
+  }
   if (strncmp(comando, "KEY,", 4) == 0 && comando[5] == '\0') {
     procesarTecla(comando[4], ahora);
     return;
@@ -535,7 +702,9 @@ void procesarComando(char *comando, unsigned long ahora) {
     Kp = nuevoKp;
     Ki = nuevoKi;
     Kd = nuevoKd;
-    myPID.SetTunings(Kp, Ki, Kd);
+    pidCalentar.SetTunings(Kp, Ki, Kd);
+    pidEnfriar.SetTunings(Kp, Ki, Kd);
+    restablecerSalidasPid();
     Serial.println("ACK,PID_TUNE");
     return;
   }
@@ -551,13 +720,19 @@ void procesarComando(char *comando, unsigned long ahora) {
       Serial.println("ERR,TEMP_TARGET,RANGE");
       return;
     }
-    if (cicloActivo || modoPrueba || fase != NORMAL ||
+    if (!sensorValido) {
+      Serial.println("ERR,TEMP_TARGET,SENSOR");
+      return;
+    }
+    if (cicloActivo || modoPrueba ||
+        estadoPruebaDimer != PRUEBA_DIMER_INACTIVA || fase != NORMAL ||
         campoRangoEnEdicion != SIN_EDICION) {
       Serial.println("ERR,TEMP_TARGET,BUSY");
       return;
     }
 
     Setpoint = nuevoSetpoint;
+    restablecerSalidasPid();
     controlPidActivo = true;
     controlDetenido = false;
     cambiarModoTermico(MODO_MANTENER);
@@ -566,10 +741,29 @@ void procesarComando(char *comando, unsigned long ahora) {
     return;
   }
 
+  if (strcmp(comando, "DIMMER_TEST") == 0) {
+    if (!sensorValido) {
+      Serial.println("ERR,DIMMER_TEST,SENSOR");
+      return;
+    }
+    if (cicloActivo || controlPidActivo || modoPrueba || !controlDetenido ||
+        fase != NORMAL || campoRangoEnEdicion != SIN_EDICION ||
+        estadoPruebaDimer != PRUEBA_DIMER_INACTIVA ||
+        focoEnDescanso || digitalRead(PIN_PELTIER) == HIGH) {
+      Serial.println("ERR,DIMMER_TEST,BUSY");
+      return;
+    }
+    estadoPruebaDimer = PRUEBA_DIMER_SUBIENDO;
+    Serial.println("ACK,DIMMER_TEST,STARTED");
+    return;
+  }
+
   if (strcmp(comando, "TEST,1") == 0 || strcmp(comando, "TEST,0") == 0) {
     bool activar = comando[5] == '1';
     if (activar &&
-        (cicloActivo || fase != NORMAL ||
+        (cicloActivo || controlPidActivo ||
+         estadoPruebaDimer != PRUEBA_DIMER_INACTIVA ||
+         (fase != NORMAL && fase != ERROR_SENSOR) ||
          campoRangoEnEdicion != SIN_EDICION)) {
       Serial.println("ERR,TEST,BUSY");
       return;
@@ -578,7 +772,7 @@ void procesarComando(char *comando, unsigned long ahora) {
       modoPrueba = activar;
       cambiarFase(sensorValido ? NORMAL : ERROR_SENSOR);
       cambiarModoTermico(MODO_MANTENER);
-      if (modoPrueba) {
+      if (modoPrueba || estadoPruebaDimer != PRUEBA_DIMER_INACTIVA) {
         servoTapa1.write(SERVO_ABIERTO);
         servoTapa2.write(SERVO_ABIERTO);
         escribirSalidas(false, false, true);
@@ -602,7 +796,7 @@ void procesarComando(char *comando, unsigned long ahora) {
       Serial.println("ERR,PURGE,SENSOR");
       return;
     }
-    if (modoPrueba) {
+    if (modoPrueba || estadoPruebaDimer != PRUEBA_DIMER_INACTIVA) {
       Serial.println("ERR,PURGE,TESTING");
       return;
     }
@@ -711,45 +905,25 @@ void actualizarSensor(unsigned long ahora) {
   float temperatura = dht.readTemperature();
   float humedad = dht.readHumidity();
 
-  if (!isfinite(temperatura) || !isfinite(humedad)) {
-    actualizarRiesgoPuntoRocio(NAN, NAN);
-    sensorValido = false;
-    if (fase == PURGA_APERTURA || fase == PURGA_VENTILACION ||
-        fase == PURGA_CIERRE) {
-      cambiarModoTermico(MODO_MANTENER);
-      DEBUG_PRINT("DEBUG,SEGURIDAD,SENSOR_INVALIDO_DURANTE_PURGA\n");
-      return;
-    }
-    modoPrueba = false;
-    cambiarFase(ERROR_SENSOR);
-    cambiarModoTermico(MODO_MANTENER);
-    escribirSalidas(false, false, false);
-    servoTapa1.write(SERVO_CERRADO);
-    servoTapa2.write(SERVO_CERRADO);
-    return;
-  }
-
-  if (temperatura < TEMPERATURA_SENSOR_MINIMA ||
+  if (!isfinite(temperatura) ||
+      temperatura < TEMPERATURA_SENSOR_MINIMA ||
       temperatura > TEMPERATURA_SENSOR_MAXIMA) {
     actualizarRiesgoPuntoRocio(NAN, NAN);
     sensorValido = false;
-    if (fase == PURGA_APERTURA || fase == PURGA_VENTILACION ||
-        fase == PURGA_CIERRE) {
-      cambiarModoTermico(MODO_MANTENER);
-      DEBUG_PRINT("DEBUG,SEGURIDAD,TEMPERATURA_INVALIDA_DURANTE_PURGA\n");
-      return;
-    }
     modoPrueba = false;
     cambiarFase(ERROR_SENSOR);
     cambiarModoTermico(MODO_MANTENER);
     escribirSalidas(false, false, false);
     servoTapa1.write(SERVO_CERRADO);
     servoTapa2.write(SERVO_CERRADO);
-    DEBUG_PRINT("DEBUG,SEGURIDAD,TEMPERATURA_FUERA_RANGO,%.1f\n",
-                temperatura);
+    DEBUG_PRINT("DEBUG,SEGURIDAD,DHT11_INVALIDO,TEMP=%.1f,HUM=%.1f\n",
+                temperatura, humedad);
     return;
   }
 
+  if (!isfinite(humedad) || humedad < 0.0f || humedad > 100.0f) {
+    humedad = NAN;
+  }
   humedadActual = humedad;
   actualizarRiesgoPuntoRocio(temperatura, humedadActual);
   temperaturaActual = temperatura;
@@ -791,6 +965,11 @@ void actualizarPurga(unsigned long ahora) {
 }
 
 void actualizarControlTermico() {
+  if (estadoPruebaDimer != PRUEBA_DIMER_INACTIVA) {
+    actualizarPruebaDimer(millis());
+    return;
+  }
+
   if (modoPrueba) {
     escribirSalidas(false, false, true);
     return;
@@ -802,22 +981,47 @@ void actualizarControlTermico() {
   }
 
   if (controlPidActivo) {
-    myPID.Compute();
-    if (fabs(Input - Setpoint) <= 2.0) {
+    if (fabs(Input - Setpoint) <= 1.0) {
+      if (modoPid != PID_INACTIVO) {
+        restablecerSalidasPid();
+      }
       cambiarModoTermico(MODO_MANTENER);
       escribirSalidas(false, false, false);
       return;
     }
-    if (Input < (Setpoint - 2.0)) {
-      cambiarModoTermico(MODO_CALENTAR);
-    } else if (Input > (Setpoint + 2.0)) {
-      cambiarModoTermico(MODO_ENFRIAR);
+
+    bool calentar = Input < Setpoint;
+    ModoPID modoSolicitado = calentar ? PID_CALENTAR : PID_ENFRIAR;
+    if (modoPid != modoSolicitado) {
+      restablecerSalidasPid();
+      modoPid = modoSolicitado;
+      inicioVentanaPidMs = millis();
     }
-    escribirSalidas(
-      modoTermico == MODO_CALENTAR,
-      modoTermico == MODO_ENFRIAR,
-      false
+
+    PID &control = calentar ? pidCalentar : pidEnfriar;
+    control.Compute();
+    double salida = calentar ? salidaPIDCalentar : salidaPIDEnfriar;
+    unsigned long ahora = millis();
+    unsigned long transcurrido = ahora - inicioVentanaPidMs;
+    if (transcurrido >= VENTANA_PID_MS) {
+      inicioVentanaPidMs +=
+          (transcurrido / VENTANA_PID_MS) * VENTANA_PID_MS;
+      transcurrido = ahora - inicioVentanaPidMs;
+    }
+    unsigned long tiempoActivo = static_cast<unsigned long>(
+        VENTANA_PID_MS * fmin(100.0, fmax(0.0, salida)) / 100.0
     );
+    cambiarModoTermico(
+        calentar ? MODO_CALENTAR : MODO_ENFRIAR
+    );
+    if (calentar) {
+        escribirSalidasConPotencia(static_cast<float>(salida), false, false);
+    } else {
+        bool salidaActiva = transcurrido < tiempoActivo;
+        escribirSalidasConPotencia(
+            0.0f, salidaActiva, false
+        );
+    }
     return;
   }
 
@@ -866,7 +1070,7 @@ void actualizarControlTermico() {
     peltierSolicitada,
     false
   );
-  if ((focoSolicitado && digitalRead(PIN_FOCO) == LOW) ||
+  if ((focoSolicitado && potenciaFocoAplicada <= 0.0f) ||
       (peltierSolicitada && digitalRead(PIN_PELTIER) == LOW)) {
     DEBUG_PRINT("DEBUG,CONTROL,ESPERANDO_DESCANSO\n");
   }
@@ -880,7 +1084,16 @@ void actualizarTimeoutComunicacion(unsigned long ahora) {
   }
 }
 
+void actualizarTimeoutTecladoUi(unsigned long ahora) {
+  if (tecladoUiActivo &&
+      ahora - ultimoHeartbeatTecladoUiMs >= TIMEOUT_TECLADO_UI_MS) {
+    tecladoUiActivo = false;
+    DEBUG_PRINT("DEBUG,KEYPAD,UI_TIMEOUT,restableciendo control local\n");
+  }
+}
+
 const char *nombreFase() {
+  if (estadoPruebaDimer != PRUEBA_DIMER_INACTIVA) return "DIMMER_TEST";
   if (modoPrueba) return "TESTING";
 
   switch (fase) {
@@ -923,14 +1136,20 @@ void enviarEstado(unsigned long ahora) {
     Serial.print(',');
     Serial.print(tempMaxima, 1);
     Serial.print(',');
-    Serial.println(cicloActivo ? 1 : 0);
+    Serial.print(cicloActivo ? 1 : 0);
+    Serial.print(',');
+    Serial.print(potenciaFocoAplicada, 1);
+    Serial.print(',');
+    Serial.println(anguloServoDimerActual);
     return;
   }
 
   Serial.print("STATUS,");
-  Serial.print(temperaturaActual, 1);
+  Serial.print(temperaturaActual, 0);
   Serial.print(',');
-  Serial.print(digitalRead(PIN_FOCO));
+  Serial.print(
+      anguloServoDimerActual > ANGULO_DIMER_MINIMO ? 1 : 0
+  );
   Serial.print(',');
   Serial.print(digitalRead(PIN_PELTIER));
   Serial.print(',');
@@ -948,7 +1167,11 @@ void enviarEstado(unsigned long ahora) {
   Serial.print(',');
   Serial.print(tempMaxima, 1);
   Serial.print(',');
-  Serial.println(cicloActivo ? 1 : 0);
+  Serial.print(cicloActivo ? 1 : 0);
+  Serial.print(',');
+  Serial.print(potenciaFocoAplicada, 1);
+  Serial.print(',');
+  Serial.println(anguloServoDimerActual);
 }
 
 void enviarTemperaturaActual(unsigned long ahora) {
@@ -958,13 +1181,11 @@ void enviarTemperaturaActual(unsigned long ahora) {
   }
   ultimoEnvioTemperaturaMs = ahora;
   Serial.print("TEMP_CURRENT:");
-  Serial.println(temperaturaActual, 1);
+  Serial.println(temperaturaActual, 0);
 }
 
 void setup() {
   Serial.begin(115200);
-  dht.begin();
-  myPID.SetMode(AUTOMATIC);
 
   for (uint8_t fila = 0; fila < 4; fila++) {
     pinMode(PIN_TECLADO_FILAS[fila], INPUT);
@@ -973,7 +1194,6 @@ void setup() {
     pinMode(PIN_TECLADO_COLUMNAS[columna], INPUT_PULLUP);
   }
 
-  pinMode(PIN_FOCO, OUTPUT);
   pinMode(PIN_PELTIER, OUTPUT);
   pinMode(PIN_FANS, OUTPUT);
   escribirSalidas(false, false, false);
@@ -982,18 +1202,32 @@ void setup() {
   servoTapa2.setPeriodHertz(50);
   servoTapa1.attach(PIN_SERVO_TAPA_1, 500, 2400);
   servoTapa2.attach(PIN_SERVO_TAPA_2, 500, 2400);
+  servoDimer.setPeriodHertz(50);
+  servoDimer.attach(PIN_SERVO_DIMER, 500, 2400);
   servoTapa1.write(SERVO_CERRADO);
   servoTapa2.write(SERVO_CERRADO);
+  servoDimer.write(ANGULO_DIMER_MINIMO);
+
+  dht.begin();
+  pidCalentar.SetOutputLimits(0.0, 100.0);
+  pidEnfriar.SetOutputLimits(0.0, 100.0);
+  pidCalentar.SetSampleTime(INTERVALO_SENSOR_MS);
+  pidEnfriar.SetSampleTime(INTERVALO_SENSOR_MS);
+  pidCalentar.SetMode(AUTOMATIC);
+  pidEnfriar.SetMode(AUTOMATIC);
+  delay(INTERVALO_SENSOR_MS);
 }
 
 void loop() {
   unsigned long ahora = millis();
   leerComandos(ahora);
+  actualizarTimeoutTecladoUi(ahora);
   escanearTeclado(ahora);
   actualizarTimeoutComunicacion(ahora);
   actualizarSensor(ahora);
   enviarTemperaturaActual(ahora);
   actualizarPurga(ahora);
   actualizarControlTermico();
+  actualizarServoDimer(millis());
   enviarEstado(ahora);
 }
