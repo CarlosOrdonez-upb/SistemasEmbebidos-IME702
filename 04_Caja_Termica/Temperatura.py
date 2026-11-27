@@ -1,11 +1,14 @@
 import sys
 import math
+from collections import deque
 from functools import partial
+from typing import cast
 import serial
+import pyqtgraph as pg
 from serial.tools import list_ports
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QGridLayout, QLabel, QDoubleSpinBox,
-                             QPushButton, QScrollArea,
+                             QPushButton, QScrollArea, QGroupBox,
                              QComboBox, QDialog,
                              QMessageBox,
                              QGraphicsView, QGraphicsScene, QGraphicsRectItem, 
@@ -43,6 +46,9 @@ class SimulacionCuarto(QMainWindow):
         self.boton_cancelar_purga = None
         self.color_ambiente = QColor(203, 209, 207)
         self.color_ambiente_objetivo = QColor(203, 209, 207)
+        self.buffer_temp = deque(maxlen=150)
+        self.buffer_time = deque(maxlen=150)
+        self.tiempo_actual = 0
 
         # --- Interfaz Gráfica ---
         main_widget = QWidget()
@@ -245,6 +251,54 @@ class SimulacionCuarto(QMainWindow):
         rango_layout.addLayout(minimo_layout)
         rango_layout.addLayout(maximo_layout)
 
+        # --- Controles PID y gráfica: conservar el teclado matricial existente ---
+        pid_group = QGroupBox("Sintonización PID")
+        pid_layout = QVBoxLayout(pid_group)
+        self.spin_kp = QDoubleSpinBox()
+        self.spin_ki = QDoubleSpinBox()
+        self.spin_kd = QDoubleSpinBox()
+        for control, valor in (
+            (self.spin_kp, 2.0),
+            (self.spin_ki, 0.5),
+            (self.spin_kd, 1.0),
+        ):
+            control.setRange(0.0, 10.0)
+            control.setSingleStep(0.1)
+            control.setValue(valor)
+        pid_layout.addWidget(QLabel("Kp"))
+        pid_layout.addWidget(self.spin_kp)
+        pid_layout.addWidget(QLabel("Ki"))
+        pid_layout.addWidget(self.spin_ki)
+        pid_layout.addWidget(QLabel("Kd"))
+        pid_layout.addWidget(self.spin_kd)
+        self.boton_aplicar_pid = QPushButton("Aplicar Tuning PID")
+        self.boton_aplicar_pid.clicked.connect(self.aplicar_tuning_pid)
+        pid_layout.addWidget(self.boton_aplicar_pid)
+
+        self.spin_temp_objetivo = QDoubleSpinBox()
+        self.spin_temp_objetivo.setRange(20.0, 60.0)
+        self.spin_temp_objetivo.setValue(28.0)
+        self.spin_temp_objetivo.setSingleStep(0.5)
+        self.spin_temp_objetivo.setSuffix(" °C")
+        pid_layout.addWidget(QLabel("Temperatura objetivo"))
+        pid_layout.addWidget(self.spin_temp_objetivo)
+        self.boton_mantener_temp = QPushButton("Mantener Temperatura (PID)")
+        self.boton_mantener_temp.clicked.connect(self.mantener_temperatura_pid)
+        pid_layout.addWidget(self.boton_mantener_temp)
+
+        self.plot_widget = pg.PlotWidget(title="Temperatura vs Tiempo")
+        self.plot_widget.setLabel("left", "Temperatura", units="°C")
+        self.plot_widget.setLabel("bottom", "Tiempo", units="s")
+        self.plot_widget.showGrid(x=True, y=True)
+        self.plot_widget.addLegend()
+        self.linea_temp = self.plot_widget.plot(
+            pen=pg.mkPen("c", width=2), name="Temp Actual"
+        )
+        self.linea_setpoint = self.plot_widget.plot(
+            pen=pg.mkPen("y", style=Qt.PenStyle.DashLine), name="Setpoint"
+        )
+        self.spin_temp_objetivo.valueChanged.connect(self.actualizar_grafica)
+
         control_layout.addWidget(titulo)
         control_layout.addWidget(subtitulo)
         control_layout.addSpacing(10)
@@ -267,6 +321,8 @@ class SimulacionCuarto(QMainWindow):
         control_layout.addSpacing(8)
         control_layout.addWidget(self.lbl_rango)
         control_layout.addLayout(rango_layout)
+        control_layout.addWidget(pid_group)
+        control_layout.addWidget(cast(QWidget, self.plot_widget))
         control_layout.addStretch()
 
         # --- Dibujar la Simulación ---
@@ -687,7 +743,19 @@ class SimulacionCuarto(QMainWindow):
                 while b"\n" in self.buffer_serial:
                     linea, _, resto = self.buffer_serial.partition(b"\n")
                     self.buffer_serial = bytearray(resto)
-                    self.procesar_linea(linea.decode("utf-8", errors="replace").strip())
+                    linea = linea.decode("utf-8", errors="replace").strip()
+                    if linea.startswith("TEMP_CURRENT:"):
+                        try:
+                            temperatura = float(linea.split(":", 1)[1])
+                        except ValueError:
+                            continue
+                        if math.isfinite(temperatura):
+                            self.buffer_temp.append(temperatura)
+                            self.tiempo_actual += 1
+                            self.buffer_time.append(self.tiempo_actual)
+                            self.actualizar_grafica()
+                    else:
+                        self.procesar_linea(linea)
             except (serial.SerialException, OSError) as error:
                 self.lbl_estado.setText(f"Estado: Error de comunicación: {error}")
                 self.cancelar_cuenta_regresiva_purga()
@@ -706,6 +774,44 @@ class SimulacionCuarto(QMainWindow):
                 self.prueba_conexion_activa = False
                 self.actualizar_boton_prueba()
         self.actualizar_botones_teclado()
+
+    def actualizar_grafica(self):
+        self.linea_temp.setData(
+            x=list(self.buffer_time), y=list(self.buffer_temp)
+        )
+        self.linea_setpoint.setData(
+            x=list(self.buffer_time),
+            y=[self.spin_temp_objetivo.value()] * len(self.buffer_time),
+        )
+
+    def aplicar_tuning_pid(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText("Estado: Conecta el ESP32 para aplicar el PID")
+            return
+        try:
+            self.arduino.write(
+                f"PID_TUNE,{self.spin_kp.value()},{self.spin_ki.value()},"
+                f"{self.spin_kd.value()}\n".encode("utf-8")
+            )
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo enviar el tuning PID: {error}"
+            )
+
+    def mantener_temperatura_pid(self):
+        if not self.arduino or not self.arduino.is_open:
+            self.lbl_estado.setText(
+                "Estado: Conecta el ESP32 para mantener la temperatura"
+            )
+            return
+        try:
+            self.arduino.write(
+                f"TEMP_TARGET:{self.spin_temp_objetivo.value()}\n".encode("utf-8")
+            )
+        except (serial.SerialException, OSError) as error:
+            self.lbl_estado.setText(
+                f"Estado: No se pudo enviar la temperatura objetivo: {error}"
+            )
 
     def actualizar_botones_teclado(self):
         conectado = self.arduino is not None and self.arduino.is_open
