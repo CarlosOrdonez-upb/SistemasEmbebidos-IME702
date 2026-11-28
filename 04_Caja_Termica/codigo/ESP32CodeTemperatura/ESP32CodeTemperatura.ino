@@ -7,8 +7,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-const char *const WIFI_SSID = "TU_WIFI";
-const char *const WIFI_PASSWORD = "TU_CONTRASENA";
+const char *const WIFI_SSID = "Dudas? ";
+const char *const WIFI_PASSWORD = "123456789";
 
 WiFiServer server(8888);
 WiFiClient client;

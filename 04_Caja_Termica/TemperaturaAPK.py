@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 import flet as ft
 from flet import canvas as cv
@@ -51,6 +52,13 @@ class TemperaturaApp:
         self.current_temperature = None
         self.humidity = None
         self.phase = "Desconectado"
+        self.previous_actuator_states = {
+            "heater": None,
+            "peltier": None,
+            "fans": None,
+            "doors": None,
+        }
+        self.sensor_error_active = False
         self.range_minimum = 28.0
         self.range_maximum = 35.0
         self.setpoint = 28.0
@@ -317,167 +325,203 @@ class TemperaturaApp:
         )
 
     def _build_page(self):
-        serial_connection = (
-            ft.Row([self.com_field, self.serial_button], spacing=8)
-            if serial_module is not None
-            else ft.Text(
-                "Puerto COM no disponible en este dispositivo.",
-                color=COLORS["muted"],
+        is_mobile = self.page.platform in (
+            ft.PagePlatform.ANDROID,
+            ft.PagePlatform.IOS,
+        )
+        connection_controls: list[ft.Control] = [
+            ft.Row(
+                [self.ip_field, self.wifi_button],
+                spacing=8,
+            ),
+        ]
+        if not is_mobile:
+            connection_controls.append(
+                ft.Row([self.com_field, self.serial_button], spacing=8)
+                if serial_module is not None
+                else ft.Text(
+                    "Puerto COM no disponible en este dispositivo.",
+                    color=COLORS["muted"],
+                )
+            )
+        connection_controls.append(
+            ft.Row(
+                [self.connection_status, self.disconnect_button],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             )
         )
-        self.root = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Text(
-                        "Control de cámara térmica",
-                        size=23,
-                        weight=ft.FontWeight.BOLD,
-                        color=COLORS["text"],
-                    ),
-                    ft.Text(
-                        "ESP32 · conexión TCP Wi-Fi o Serial USB",
-                        color=COLORS["muted"],
-                    ),
-                    self._section(
-                        "Conexión",
-                        [
-                            ft.Row(
-                                [self.ip_field, self.wifi_button],
-                                spacing=8,
-                            ),
-                            serial_connection,
-                            ft.Row(
-                                [self.connection_status, self.disconnect_button],
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                            ),
-                        ],
-                    ),
-                    self._section(
-                        "Lecturas actuales",
-                        [
-                            self.temperature_text,
-                            self.humidity_text,
-                            self.phase_text,
-                            self.range_text,
-                            self.dimmer_text,
-                            ft.ResponsiveRow(
-                                [
-                                    ft.Container(
-                                        content=self.indicators["heater"],
-                                        col={"xs": 6, "md": 3},
-                                    ),
-                                    ft.Container(
-                                        content=self.indicators["peltier"],
-                                        col={"xs": 6, "md": 3},
-                                    ),
-                                    ft.Container(
-                                        content=self.indicators["fans"],
-                                        col={"xs": 6, "md": 3},
-                                    ),
-                                    ft.Container(
-                                        content=self.indicators["doors"],
-                                        col={"xs": 6, "md": 3},
-                                    ),
-                                ],
-                                spacing=8,
-                                run_spacing=8,
-                            ),
-                            self.risk_banner,
-                        ],
-                    ),
-                    self._section(
-                        "Temperatura en tiempo real",
-                        [
-                            ft.Row(
-                                [
-                                    ft.Text("Temperatura", color=COLORS["cyan"]),
-                                    ft.Text("Setpoint", color=COLORS["orange"]),
-                                ],
-                                spacing=20,
-                            ),
-                            self.chart_canvas,
-                            self.chart_label,
-                        ],
-                    ),
-                    self._section(
-                        "Rango térmico",
-                        [
-                            ft.ResponsiveRow(
-                                [
-                                    ft.Container(
-                                        content=self.range_minimum_field,
-                                        col={"xs": 6, "md": 4},
-                                    ),
-                                    ft.Container(
-                                        content=self.range_maximum_field,
-                                        col={"xs": 6, "md": 4},
-                                    ),
-                                    ft.Container(
-                                        content=self.apply_range_button,
-                                        col={"xs": 12, "md": 4},
-                                    ),
-                                ],
-                                spacing=8,
-                            ),
-                        ],
-                    ),
-                    self._section(
-                        "Control PID",
-                        [
-                            ft.ResponsiveRow(
-                                [
-                                    ft.Container(content=self.kp_field, col={"xs": 4}),
-                                    ft.Container(content=self.ki_field, col={"xs": 4}),
-                                    ft.Container(content=self.kd_field, col={"xs": 4}),
-                                ],
-                                spacing=8,
-                            ),
-                            ft.Row([self.apply_pid_button], spacing=8),
-                            ft.Row(
-                                [self.target_field, self.start_pid_button],
-                                spacing=8,
-                            ),
-                        ],
-                    ),
-                    self._section(
-                        "Pruebas y operación",
-                        [
-                            ft.Row(
-                                [self.cycle_min_button, self.cycle_max_button],
-                                spacing=8,
-                            ),
-                            ft.Row(
-                                [self.test_button, self.dimmer_button],
-                                spacing=8,
-                            ),
-                            ft.Row([self.purge_button, self.stop_button], spacing=8),
-                        ],
-                    ),
-                    self._section(
-                        "Teclado matricial virtual",
-                        [
-                            self.matrix_mode_text,
-                            *self.matrix_rows,
-                            ft.Text(
-                                "A: mover · B: escribir · 2/4/6/8: navegar · "
-                                "1/3: ±0,5 · *: decimal · #: aceptar · "
-                                "C: ciclo mínima · D: detener",
-                                color=COLORS["muted"],
-                                size=12,
-                            ),
-                        ],
-                    ),
-                    self.status_text,
-                ],
-                spacing=12,
-                scroll=ft.ScrollMode.AUTO,
+        self.root = ft.SafeArea(
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "Control de cámara térmica",
+                            size=23,
+                            weight=ft.FontWeight.BOLD,
+                            color=COLORS["text"],
+                        ),
+                        ft.Text(
+                            "ESP32 · conexión TCP Wi-Fi o Serial USB",
+                            color=COLORS["muted"],
+                        ),
+                        self._section(
+                            "Conexión",
+                            connection_controls,
+                        ),
+                        self._section(
+                            "Lecturas actuales",
+                            [
+                                self.temperature_text,
+                                self.humidity_text,
+                                self.phase_text,
+                                self.range_text,
+                                self.dimmer_text,
+                                ft.ResponsiveRow(
+                                    [
+                                        ft.Container(
+                                            content=self.indicators["heater"],
+                                            col={"xs": 6, "md": 3},
+                                        ),
+                                        ft.Container(
+                                            content=self.indicators["peltier"],
+                                            col={"xs": 6, "md": 3},
+                                        ),
+                                        ft.Container(
+                                            content=self.indicators["fans"],
+                                            col={"xs": 6, "md": 3},
+                                        ),
+                                        ft.Container(
+                                            content=self.indicators["doors"],
+                                            col={"xs": 6, "md": 3},
+                                        ),
+                                    ],
+                                    spacing=8,
+                                    run_spacing=8,
+                                ),
+                                self.risk_banner,
+                            ],
+                        ),
+                        self._section(
+                            "Temperatura en tiempo real",
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Text(
+                                            "Temperatura", color=COLORS["cyan"]
+                                        ),
+                                        ft.Text(
+                                            "Setpoint", color=COLORS["orange"]
+                                        ),
+                                    ],
+                                    spacing=20,
+                                ),
+                                self.chart_canvas,
+                                self.chart_label,
+                            ],
+                        ),
+                        self._section(
+                            "Rango térmico",
+                            [
+                                ft.ResponsiveRow(
+                                    [
+                                        ft.Container(
+                                            content=self.range_minimum_field,
+                                            col={"xs": 6, "md": 4},
+                                        ),
+                                        ft.Container(
+                                            content=self.range_maximum_field,
+                                            col={"xs": 6, "md": 4},
+                                        ),
+                                        ft.Container(
+                                            content=self.apply_range_button,
+                                            col={"xs": 12, "md": 4},
+                                        ),
+                                    ],
+                                    spacing=8,
+                                ),
+                            ],
+                        ),
+                        self._section(
+                            "Control PID",
+                            [
+                                ft.ResponsiveRow(
+                                    [
+                                        ft.Container(
+                                            content=self.kp_field,
+                                            col={"xs": 4},
+                                        ),
+                                        ft.Container(
+                                            content=self.ki_field,
+                                            col={"xs": 4},
+                                        ),
+                                        ft.Container(
+                                            content=self.kd_field,
+                                            col={"xs": 4},
+                                        ),
+                                    ],
+                                    spacing=8,
+                                ),
+                                ft.Row([self.apply_pid_button], spacing=8),
+                                ft.Row(
+                                    [self.target_field, self.start_pid_button],
+                                    spacing=8,
+                                ),
+                            ],
+                        ),
+                        self._section(
+                            "Pruebas y operación",
+                            [
+                                ft.Row(
+                                    [self.cycle_min_button, self.cycle_max_button],
+                                    spacing=8,
+                                ),
+                                ft.Row(
+                                    [self.test_button, self.dimmer_button],
+                                    spacing=8,
+                                ),
+                                ft.Row(
+                                    [self.purge_button, self.stop_button],
+                                    spacing=8,
+                                ),
+                            ],
+                        ),
+                        self._section(
+                            "Teclado matricial virtual",
+                            [
+                                self.matrix_mode_text,
+                                *self.matrix_rows,
+                                ft.Text(
+                                    "A: mover · B: escribir · 2/4/6/8: navegar · "
+                                    "1/3: ±0,5 · *: decimal · #: aceptar · "
+                                    "C: ciclo mínima · D: detener",
+                                    color=COLORS["muted"],
+                                    size=12,
+                                ),
+                            ],
+                        ),
+                        self.status_text,
+                    ],
+                    spacing=12,
+                    scroll=ft.ScrollMode.AUTO,
+                    expand=True,
+                ),
                 expand=True,
+                padding=4,
             ),
             expand=True,
-            padding=4,
         )
 
         self._refresh_command_buttons()
+
+    def mostrar_notificacion(self, mensaje, color_fondo):
+        self.page.show_dialog(
+            ft.SnackBar(
+                content=ft.Text(mensaje, color=COLORS["text"]),
+                bgcolor=color_fondo,
+                duration=2000,
+                behavior=ft.SnackBarBehavior.FLOATING,
+            )
+        )
 
     def _build_chart_shapes(self):
         width = 320
@@ -1002,6 +1046,10 @@ class TemperaturaApp:
                     self.connected = True
                     self.connecting = False
                     self.connection_kind = value
+                    self.mostrar_notificacion(
+                        "✅ Conectado al ESP32",
+                        COLORS["green"],
+                    )
                     self.connection_status.value = f"Conectado por {value}"
                     self.status_text.value = (
                         "Teclado matricial habilitado; heartbeat cada 1 s."
@@ -1012,9 +1060,15 @@ class TemperaturaApp:
                     )
                     self._refresh_command_buttons()
                 elif event == "disconnected":
+                    was_connected = self.connected
                     self.connected = False
                     self.connecting = False
                     self.connection_kind = ""
+                    if was_connected:
+                        self.mostrar_notificacion(
+                            "⚠️ Desconectado del ESP32",
+                            COLORS["orange"],
+                        )
                     self.connection_status.value = "Desconectado"
                     self.status_text.value = value
                     self._refresh_command_buttons()
@@ -1117,6 +1171,13 @@ class TemperaturaApp:
         ):
             power = 0.0
 
+        self._notify_status_transitions(
+            heater,
+            peltier,
+            fans,
+            doors,
+            sensor_error,
+        )
         self.heater_on = heater
         self.peltier_on = peltier
         self.fans_on = fans
@@ -1170,6 +1231,49 @@ class TemperaturaApp:
         else:
             self._set_temperature(temperature)
             self.status_text.value = "Datos recibidos del ESP32."
+
+    def _notify_status_transitions(
+        self,
+        heater,
+        peltier,
+        fans,
+        doors,
+        sensor_error,
+    ):
+        states = {
+            "heater": heater,
+            "peltier": peltier,
+            "fans": fans,
+            "doors": doors,
+        }
+        notifications = (
+            ("heater", "🔥 Foco calefactor encendido", COLORS["orange"]),
+            ("peltier", "❄️ Módulo Peltier encendido", COLORS["cyan"]),
+            ("fans", "🌀 Ventiladores activados", COLORS["green"]),
+        )
+        for key, message, color in notifications:
+            if self.previous_actuator_states[key] is False and states[key]:
+                self.mostrar_notificacion(message, color)
+
+        previous_doors = self.previous_actuator_states["doors"]
+        if previous_doors is False and doors:
+            self.mostrar_notificacion(
+                "🚪 Compuertas de purga abiertas",
+                COLORS["cyan"],
+            )
+        elif previous_doors is True and not doors:
+            self.mostrar_notificacion(
+                "🔒 Compuertas cerradas",
+                COLORS["green"],
+            )
+
+        self.previous_actuator_states.update(states)
+        if sensor_error and not self.sensor_error_active:
+            self.mostrar_notificacion(
+                "🚨 Error de lectura en sensor DHT11",
+                COLORS["red"],
+            )
+        self.sensor_error_active = sensor_error
 
     def _set_temperature(self, temperature):
         self.current_temperature = temperature
@@ -1336,9 +1440,54 @@ class TemperaturaApp:
         if self.worker_stop is not None:
             self.worker_stop.set()
 
-def main(page):
-    TemperaturaApp(page)
+async def main(page):
+  page.title = "Caja térmica"
+  page.theme_mode = ft.ThemeMode.DARK
+  page.bgcolor = "#0F172A"
+
+  icon_path = Path(__file__).resolve().parent / "assets" / "icon.png"
+  logo = (
+      ft.Image(src="icon.png", width=96, height=96)
+      if icon_path.is_file()
+      else ft.Icon(ft.Icons.THERMOSTAT, size=96, color=COLORS["cyan"])
+  )
+  page.add(
+      ft.Container(
+          content=ft.Column(
+              [
+                  logo,
+                  ft.Text(
+                      "Control de Cámara Térmica",
+                      size=24,
+                      weight=ft.FontWeight.BOLD,
+                      color="#F8FAFC",
+                      text_align=ft.TextAlign.CENTER,
+                  ),
+                  ft.Text(
+                      "Sistemas Embebidos · ESP32",
+                      color="#CBD5E1",
+                      text_align=ft.TextAlign.CENTER,
+                  ),
+                  ft.ProgressRing(
+                      width=24,
+                      height=24,
+                      stroke_width=2,
+                      color=COLORS["cyan"],
+                  ),
+              ],
+              alignment=ft.MainAxisAlignment.CENTER,
+              horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+              spacing=18,
+          ),
+          bgcolor="#0F172A",
+          expand=True,
+          alignment=ft.Alignment.CENTER,
+      )
+  )
+  await asyncio.sleep(2.5)
+  page.clean()
+  TemperaturaApp(page)
 
 
 if __name__ == "__main__":
-    ft.run(main)
+  ft.run(main, assets_dir="assets")
