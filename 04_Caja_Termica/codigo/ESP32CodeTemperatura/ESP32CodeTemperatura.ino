@@ -1,15 +1,58 @@
+#include <Arduino.h>
 #include <ESP32Servo.h>
 #include <DHT.h>
 #include <PID_v1.h>
+#include <WiFi.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+const char *const WIFI_SSID = "TU_WIFI";
+const char *const WIFI_PASSWORD = "TU_CONTRASENA";
+
+WiFiServer server(8888);
+WiFiClient client;
+HardwareSerial &serialUsb = Serial;
+
+class SalidaDual : public Print {
+ public:
+  void begin(unsigned long velocidad) {
+    serialUsb.begin(velocidad);
+  }
+
+  int available() {
+    return serialUsb.available();
+  }
+
+  int read() {
+    return serialUsb.read();
+  }
+
+  size_t write(uint8_t valor) override {
+    size_t enviados = serialUsb.write(valor);
+    if (client && client.connected()) {
+      client.write(valor);
+    }
+    return enviados;
+  }
+
+  size_t write(const uint8_t *datos, size_t longitud) override {
+    size_t enviados = serialUsb.write(datos, longitud);
+    if (client && client.connected()) {
+      client.write(datos, longitud);
+    }
+    return enviados;
+  }
+};
+
+SalidaDual salidaDual;
+#define Serial salidaDual
 
 #define DHTPIN 15
 #define DHTTYPE DHT11
 
 #ifdef DEBUG_MODE
-#define DEBUG_PRINT(...) Serial.printf(__VA_ARGS__)
+#define DEBUG_PRINT(...) serialUsb.printf(__VA_ARGS__)
 #else
 #define DEBUG_PRINT(...) do {} while (0)
 #endif
@@ -131,8 +174,13 @@ bool riesgoPuntoRocio = false;
 bool timeoutComunicacionReportado = false;
 bool focoEnDescanso = false;
 bool peltierEnDescanso = false;
-char bufferComando[48];
-size_t indiceComando = 0;
+bool servidorWifiIniciado = false;
+bool descartarComandoSerial = false;
+bool descartarComandoWifi = false;
+char bufferComandoSerial[48];
+char bufferComandoWifi[48];
+size_t indiceComandoSerial = 0;
+size_t indiceComandoWifi = 0;
 unsigned long ultimoSensorMs = 0;
 unsigned long ultimoEstadoMs = 0;
 unsigned long ultimoEnvioTemperaturaMs = 0;
@@ -876,22 +924,85 @@ void procesarComando(char *comando, unsigned long ahora) {
   Serial.println(tempMaxima, 1);
 }
 
-void leerComandos(unsigned long ahora) {
-  while (Serial.available() > 0) {
-    char caracter = static_cast<char>(Serial.read());
+void leerCanalComandos(Stream &canal, char *buffer, size_t capacidad,
+                       size_t &indice, bool &descartar,
+                       unsigned long ahora) {
+  while (canal.available() > 0) {
+    int byteRecibido = canal.read();
+    if (byteRecibido < 0) {
+      break;
+    }
+    char caracter = static_cast<char>(byteRecibido);
     if (caracter == '\r') {
       continue;
     }
 
     if (caracter == '\n') {
-      bufferComando[indiceComando] = '\0';
-      procesarComando(bufferComando, ahora);
-      indiceComando = 0;
-    } else if (indiceComando < sizeof(bufferComando) - 1) {
-      bufferComando[indiceComando++] = caracter;
+      buffer[indice] = '\0';
+      if (!descartar && indice > 0) {
+        procesarComando(buffer, ahora);
+      }
+      indice = 0;
+      descartar = false;
+    } else if (descartar) {
+      continue;
+    } else if (indice < capacidad - 1) {
+      buffer[indice++] = caracter;
     } else {
-      indiceComando = 0;
+      indice = 0;
+      descartar = true;
     }
+  }
+}
+
+void leerComandos(unsigned long ahora) {
+  leerCanalComandos(serialUsb, bufferComandoSerial,
+                    sizeof(bufferComandoSerial), indiceComandoSerial,
+                    descartarComandoSerial, ahora);
+  if (client && client.connected()) {
+    leerCanalComandos(client, bufferComandoWifi,
+                      sizeof(bufferComandoWifi), indiceComandoWifi,
+                      descartarComandoWifi, ahora);
+  } else {
+    indiceComandoWifi = 0;
+    descartarComandoWifi = false;
+  }
+}
+
+void actualizarServidorWifi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    if (servidorWifiIniciado) {
+      if (client) {
+        client.stop();
+      }
+      indiceComandoWifi = 0;
+      servidorWifiIniciado = false;
+      Serial.println("INFO,WIFI,DISCONNECTED");
+    }
+    return;
+  }
+
+  if (!servidorWifiIniciado) {
+    server.begin();
+    servidorWifiIniciado = true;
+    Serial.print("INFO,WIFI,READY,");
+    Serial.println(WiFi.localIP());
+  }
+
+  WiFiClient nuevoCliente = server.available();
+  if (nuevoCliente) {
+    if (client && client.connected()) {
+      client.stop();
+    }
+    client = nuevoCliente;
+    indiceComandoWifi = 0;
+    Serial.println("INFO,WIFI,CLIENT_CONNECTED");
+  }
+
+  if (client && !client.connected()) {
+    client.stop();
+    indiceComandoWifi = 0;
+    Serial.println("INFO,WIFI,CLIENT_DISCONNECTED");
   }
 }
 
@@ -1186,6 +1297,10 @@ void enviarTemperaturaActual(unsigned long ahora) {
 
 void setup() {
   Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.println("INFO,WIFI,CONNECTING");
 
   for (uint8_t fila = 0; fila < 4; fila++) {
     pinMode(PIN_TECLADO_FILAS[fila], INPUT);
@@ -1220,6 +1335,7 @@ void setup() {
 
 void loop() {
   unsigned long ahora = millis();
+  actualizarServidorWifi();
   leerComandos(ahora);
   actualizarTimeoutTecladoUi(ahora);
   escanearTeclado(ahora);

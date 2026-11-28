@@ -65,6 +65,23 @@ Se desarrolló una aplicación de escritorio en Python utilizando **PyQt5** que 
 - **Gráfica en tiempo real:** Visualización de la respuesta térmica y del Setpoint mediante gráficas animadas con pyqtgraph.
 - **Comunicación Serial:** Selecciona el puerto COM del ESP32 y pulsa **Conectar** (115200 baudios); la aplicación no inicia el control térmico automáticamente. Recibe `ACK,SETRANGE` al editar el rango y `STATUS` cada 250 ms. El firmware debe ser compatible con el protocolo de ciclo para habilitar los botones de inicio y detención.
 
+La aplicación de escritorio `Temperatura.py` conserva sus dependencias PyQt; instala `PyQt5`, `pyqtgraph` y `pyserial` por separado. `requirements.txt` queda destinado a la aplicación Flet para Android.
+
+## 📱 Aplicación móvil Flet (Android)
+
+`TemperaturaAPK.py` ofrece la misma configuración térmica y comandos principales en una interfaz adaptable a móvil. La conexión Wi-Fi usa TCP en el puerto **8888**; también puede usar Serial USB en Windows/PC cuando PySerial esté instalado. El teclado matricial mantiene `KEYPAD_UI,1` con heartbeat cada segundo y procesa las teclas físicas y virtuales con el mismo mapeo. La gráfica nativa se dibuja con `flet.canvas` y muestra temperatura y setpoint en el tiempo.
+
+Antes de cargar el firmware, configura `WIFI_SSID` y `WIFI_PASSWORD` al inicio de `codigo/ESP32CodeTemperatura/ESP32CodeTemperatura.ino`. El ESP32 se conecta a esa red como cliente; consulta por Serial la trama `INFO,WIFI,READY,<IP>` o revisa los clientes del router para encontrar su dirección. El teléfono y el ESP32 deben estar en la misma red local. No expongas el puerto TCP 8888 directamente a Internet.
+
+Instala el entorno de compilación Android (JDK 17 y Android SDK; Flet puede instalarlos al primer build) y ejecuta desde esta carpeta:
+
+```bash
+pip install -r requirements.txt
+flet build apk --module-name TemperaturaAPK --android-permissions android.permission.INTERNET=true
+```
+
+La dependencia única de `requirements.txt` es `flet==1.1.4`; PySerial se importa opcionalmente y no se incluye en el APK. Flet 1.1.4 no expone `ft.LineChart`, por lo que la gráfica usa los controles Canvas incluidos en Flet, sin instalar un paquete de charts.
+
 ##  Ver simulación
   ![Simulacion](sources/caja1.gif)
 
@@ -72,9 +89,9 @@ Se desarrolló una aplicación de escritorio en Python utilizando **PyQt5** que 
 
 ---
 
-## 🔄 Protocolo de Comunicación Serial
+## 🔄 Protocolo de Comunicación Serial y Wi-Fi
 
-La interfaz y el ESP32 se comunican mediante texto plano estructurado:
+La interfaz y el ESP32 intercambian texto plano estructurado, terminado en `\n`, tanto por Serial USB a 115200 baudios como por TCP en el puerto 8888:
 
 | Dirección | Comando / Formato | Descripción |
 | :--- | :--- | :--- |
@@ -85,6 +102,7 @@ La interfaz y el ESP32 se comunican mediante texto plano estructurado:
 | **PC → ESP32** | `TEMP_TARGET:XX` | Activa el control PID con el objetivo indicado entre 20 y 50 °C. |
 | **PC → ESP32** | `PID_TUNE,Kp,Ki,Kd` | Actualiza los parámetros PID; cada parámetro debe estar entre 0 y 10. |
 | **PC → ESP32** | `KEYPAD_UI,1` / `KEYPAD_UI,0` | Activa el envío de teclas matriciales a la interfaz; se mantiene con una señal cada segundo y vuelve al control local si se pierde durante 5 segundos. |
+| **ESP32 → interfaz** | `INFO,WIFI,READY,<IP>` | Indica por Serial que el servidor TCP está listo y muestra la IP del ESP32. |
 | **ESP32 → PC** | `KEYPAD_KEY,<tecla>` | Entrega una tecla física al navegador de la interfaz cuando está activo el modo UI. |
 | **PC → ESP32** | `DIMMER_TEST` | Prueba el dimmer a 50% por un segundo y retorna el servo a 0°; requiere sensor válido y control detenido. |
 | **ESP32 → PC** | `ACK,DIMMER_TEST,STARTED` / `ACK,DIMMER_TEST,DONE` | Indica el inicio y la finalización de la prueba automática. |
@@ -100,17 +118,18 @@ La interfaz y el ESP32 se comunican mediante texto plano estructurado:
 ## 🚀 Instrucciones de Ejecución
 
 ### 1. Cargar el Firmware
-- Abre `codigo/ESP32CodeTemperatura.ino` en Arduino IDE.
-- Asegúrate de tener instalada la librería `ESP32Servo`.
+- Abre `codigo/ESP32CodeTemperatura/ESP32CodeTemperatura.ino` en Arduino IDE.
+- Instala las librerías `ESP32Servo`, `DHT sensor library` y `PID_v1`.
 - Selecciona la placa "ESP32 Dev Module" y carga el código.
+- Configura `WIFI_SSID` y `WIFI_PASSWORD` antes de cargar si usarás la conexión Wi-Fi.
 
-### 2. Ejecutar la Interfaz Gráfica
-- **Requisitos:** Python 3.13 instalado.
-- Instala las dependencias necesarias abriendo una terminal:
+### 2. Ejecutar las interfaces
+- Para la aplicación de escritorio PyQt:
   ```bash
-  pip install -r requirements.txt
+  pip install PyQt5 pyqtgraph pyserial
+  python Temperatura.py
   ```
-- En Arduino IDE, instala las librerías `ESP32Servo`, `DHT sensor library` y `PID_v1`.
+- Para compilar la aplicación Flet a APK, instala `requirements.txt` y sigue el comando de la sección **Aplicación móvil Flet (Android)**.
 
 ---
 
